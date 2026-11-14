@@ -85,7 +85,35 @@ export function maskApiKey(secret: string): string {
   return `${prefix}••••••••${suffix}`;
 }
 
-export function signSessionToken(sessionId: string): string {
+export interface SignedAdminTokenClaims {
+  sid: string;
+  aid: string;
+  email: string;
+  role: string;
+  pwdVer: string;
+  iat: number;
+  exp: number;
+}
+
+export function computePasswordVersion(passwordHash: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(passwordHash || '')
+    .digest('hex')
+    .slice(0, 16);
+}
+
+export function signSessionToken(sessionId: string, claims?: Omit<SignedAdminTokenClaims, 'sid'>): string {
+  if (claims) {
+    const fullClaims: SignedAdminTokenClaims = { sid: sessionId, ...claims };
+    const payloadB64 = Buffer.from(JSON.stringify(fullClaims), 'utf8').toString('base64url');
+    const body = `v2.${payloadB64}`;
+    const sig = crypto
+      .createHmac('sha256', getSigningKey())
+      .update(body)
+      .digest('base64url');
+    return `${body}.${sig}`;
+  }
   const sig = crypto
     .createHmac('sha256', getSigningKey())
     .update(sessionId)
@@ -93,8 +121,40 @@ export function signSessionToken(sessionId: string): string {
   return `${sessionId}.${sig}`;
 }
 
+export function verifyAdminSessionToken(token: string | undefined | null): SignedAdminTokenClaims | null {
+  if (!token || typeof token !== 'string') return null;
+  if (!token.startsWith('v2.')) return null;
+
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [prefix, payloadB64, providedSig] = parts;
+  if (prefix !== 'v2' || !payloadB64 || !providedSig) return null;
+
+  const body = `${prefix}.${payloadB64}`;
+  const expectedSig = crypto
+    .createHmac('sha256', getSigningKey())
+    .update(body)
+    .digest('base64url');
+
+  try {
+    const a = Buffer.from(providedSig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+    const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as SignedAdminTokenClaims;
+    if (!parsed || typeof parsed.sid !== 'string' || typeof parsed.aid !== 'string') return null;
+    if (typeof parsed.exp !== 'number' || parsed.exp <= Date.now()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function verifySignedSessionToken(token: string | undefined | null): string | null {
   if (!token || typeof token !== 'string') return null;
+  if (token.startsWith('v2.')) {
+    return verifyAdminSessionToken(token)?.sid || null;
+  }
   const dotIdx = token.indexOf('.');
   if (dotIdx <= 0) return null;
   const sessionId = token.slice(0, dotIdx);

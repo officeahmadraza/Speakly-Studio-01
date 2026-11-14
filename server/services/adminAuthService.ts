@@ -17,6 +17,8 @@ import {
   hashPassword,
   signSessionToken,
   verifySignedSessionToken,
+  verifyAdminSessionToken,
+  computePasswordVersion,
   hashResetToken,
 } from './cryptoVault.js';
 
@@ -175,6 +177,17 @@ export function validatePasswordStrength(password: string): string | null {
   return null;
 }
 
+function computeAccountTokenVersion(account: AdminAccount): string {
+  if (account.passwordRevision) {
+    return computePasswordVersion(account.passwordRevision);
+  }
+  const envAdminPwd = (process.env.ADMIN_PASSWORD || '').trim();
+  if (account.id === 'admin_super_root' && envAdminPwd) {
+    return computePasswordVersion(`root:${envAdminPwd}`);
+  }
+  return computePasswordVersion(account.passwordHash);
+}
+
 export async function authenticateAdmin(
   email: string,
   password: string,
@@ -258,7 +271,14 @@ export async function authenticateAdmin(
       ipAddress,
     });
 
-    const signedToken = signSessionToken(sessionId);
+    const signedToken = signSessionToken(sessionId, {
+      aid: account.id,
+      email: account.email,
+      role: account.role,
+      pwdVer: computeAccountTokenVersion(account),
+      iat: nowMs,
+      exp: session.expiresAt,
+    });
     return {
       account: sanitizeAdminAccount(account),
       signedToken,
@@ -266,40 +286,75 @@ export async function authenticateAdmin(
   });
 }
 
+const revokedSessionIds = new Set<string>();
+
 export async function resolveAdminSession(
   req: Request
 ): Promise<{ account: AdminAccount; session: AdminSession } | null> {
   const rawToken = extractRawAdminToken(req);
-  const sessionId = verifySignedSessionToken(rawToken);
-  if (!sessionId) return null;
+  const v2Claims = verifyAdminSessionToken(rawToken);
+  const sessionId = v2Claims ? v2Claims.sid : verifySignedSessionToken(rawToken);
+  if (!sessionId || revokedSessionIds.has(sessionId)) return null;
 
   const db = readDatabase();
-  const session = db.adminSessions.find((s) => s.id === sessionId);
-  if (!session) return null;
-
   const nowMs = Date.now();
-  if (session.expiresAt <= nowMs || nowMs - session.lastActivityAt > ADMIN_SESSION_IDLE_MS) {
-    // Session expired due to inactivity or max lifetime; clean up asynchronously
-    await runDbTransaction((txDb) => {
-      txDb.adminSessions = txDb.adminSessions.filter((s) => s.id !== sessionId);
-    }).catch(() => undefined);
-    return null;
+  let session = db.adminSessions.find((s) => s.id === sessionId);
+
+  if (session) {
+    if (session.expiresAt <= nowMs || nowMs - session.lastActivityAt > ADMIN_SESSION_IDLE_MS) {
+      await runDbTransaction((txDb) => {
+        txDb.adminSessions = txDb.adminSessions.filter((s) => s.id !== sessionId);
+      }).catch(() => undefined);
+      return null;
+    }
+
+    const account = db.adminAccounts.find((a) => a.id === session!.adminId);
+    if (!account || !account.isActive) {
+      return null;
+    }
+
+    if (v2Claims && v2Claims.pwdVer !== computeAccountTokenVersion(account)) {
+      return null;
+    }
+
+    if (nowMs - session.lastActivityAt > 30_000) {
+      await runDbTransaction((txDb) => {
+        const target = txDb.adminSessions.find((s) => s.id === sessionId);
+        if (target) target.lastActivityAt = nowMs;
+      }).catch(() => undefined);
+    }
+
+    return { account, session };
   }
 
-  const account = db.adminAccounts.find((a) => a.id === session.adminId);
-  if (!account || !account.isActive) {
-    return null;
-  }
+  // Cross-instance serverless fallback: verify signed v2 token claims against active admin account
+  if (!v2Claims) return null;
 
-  // Refresh sliding idle window if at least 30 seconds elapsed
-  if (nowMs - session.lastActivityAt > 30_000) {
-    await runDbTransaction((txDb) => {
-      const target = txDb.adminSessions.find((s) => s.id === sessionId);
-      if (target) target.lastActivityAt = nowMs;
-    }).catch(() => undefined);
-  }
+  const account = db.adminAccounts.find(
+    (a) => a.id === v2Claims.aid || a.email.toLowerCase() === v2Claims.email.toLowerCase()
+  );
+  if (!account || !account.isActive) return null;
+  if (v2Claims.pwdVer !== computeAccountTokenVersion(account)) return null;
 
-  return { account, session };
+  const hydratedSession: AdminSession = {
+    id: sessionId,
+    adminId: account.id,
+    email: account.email,
+    role: account.role,
+    ipAddress: getClientIp(req),
+    userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
+    createdAt: v2Claims.iat || nowMs,
+    lastActivityAt: nowMs,
+    expiresAt: v2Claims.exp,
+  };
+
+  await runDbTransaction((txDb) => {
+    if (!txDb.adminSessions.some((s) => s.id === sessionId)) {
+      txDb.adminSessions.unshift(hydratedSession);
+    }
+  }).catch(() => undefined);
+
+  return { account, session: hydratedSession };
 }
 
 export async function destroyAdminSession(req: Request, res: Response): Promise<void> {
@@ -309,6 +364,7 @@ export async function destroyAdminSession(req: Request, res: Response): Promise<
 
   if (!sessionId) return;
 
+  revokedSessionIds.add(sessionId);
   const ipAddress = getClientIp(req);
   await runDbTransaction((db) => {
     const existing = db.adminSessions.find((s) => s.id === sessionId);
@@ -404,6 +460,7 @@ export async function changeAdminPassword(
     const { hash, salt } = hashPassword(newPassword);
     account.passwordHash = hash;
     account.passwordSalt = salt;
+    account.passwordRevision = crypto.randomBytes(8).toString('hex');
     account.mustChangePassword = false;
     account.resetTokenHash = null;
     account.resetTokenExpiresAt = null;
@@ -503,6 +560,7 @@ export async function confirmAdminPasswordReset(params: {
     const { hash, salt } = hashPassword(params.newPassword);
     account.passwordHash = hash;
     account.passwordSalt = salt;
+    account.passwordRevision = crypto.randomBytes(8).toString('hex');
     account.mustChangePassword = false;
     account.resetTokenHash = null;
     account.resetTokenExpiresAt = null;

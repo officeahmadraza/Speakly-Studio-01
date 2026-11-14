@@ -77,6 +77,7 @@ export interface AdminAccount {
   permissions: AdminPermission[];
   passwordHash: string;
   passwordSalt: string;
+  passwordRevision?: string;
   isActive: boolean;
   mustChangePassword: boolean;
   resetTokenHash?: string | null;
