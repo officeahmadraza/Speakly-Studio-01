@@ -1,0 +1,155 @@
+{
+  "adminAccounts": [
+    {
+      "id": "admin_super_root",
+      "email": "officeahmadraza@gmail.com",
+      "name": "Super Administrator",
+      "role": "Super Admin",
+      "permissions": [
+        "*"
+      ],
+      "passwordHash": "9155819d94ce8552b65df4ed3a7b969f72150f747332d4ee4f7ceae5a8c8d630ce3074a844989c59dc7ffb077838db622bd7fa534838ec2d71a5fef906e27f2d",
+      "passwordSalt": "fc556b89fff54a8e37d89199e8ceeebf",
+      "isActive": true,
+      "mustChangePassword": false,
+      "lastLoginAt": null,
+      "createdAt": "2026-11-13T12:22:55.588Z",
+      "updatedAt": "2026-11-13T12:22:55.588Z"
+    }
+  ],
+  "adminSessions": [],
+  "users": [],
+  "welcomeBonusClaims": [],
+  "creditTransactions": [],
+  "paymentRequests": [],
+  "paymentReceipts": [],
+  "pricingPlans": [
+    {
+      "id": "plan_starter",
+      "name": "Starter",
+      "audience": "For individual creators testing AI voiceovers",
+      "monthlyPrice": 0,
+      "yearlyPrice": 0,
+      "credits": 2500,
+      "durationDays": 30,
+      "features": [
+        "2,500 monthly synthesis credits",
+        "Access to standard voice actors",
+        "MP3 & WAV verified downloads",
+        "Up to 50,000 chars per script"
+      ],
+      "isActive": true,
+      "isFeatured": false,
+      "displayOrder": 1,
+      "createdAt": "2026-11-13T12:15:26.897Z",
+      "updatedAt": "2026-11-13T12:15:26.897Z"
+    },
+    {
+      "id": "plan_pro",
+      "name": "Pro",
+      "audience": "For podcasters, educators & content studios",
+      "monthlyPrice": 24,
+      "yearlyPrice": 240,
+      "credits": 15000,
+      "durationDays": 30,
+      "features": [
+        "15,000 monthly synthesis credits",
+        "Priority speech generation queue",
+        "Word-aligned transcript metadata",
+        "Unlimited cloud projects & favorites"
+      ],
+      "isActive": true,
+      "isFeatured": true,
+      "displayOrder": 2,
+      "createdAt": "2026-11-13T12:15:26.897Z",
+      "updatedAt": "2026-11-13T12:15:26.897Z"
+    },
+    {
+      "id": "plan_studio",
+      "name": "Studio",
+      "audience": "For high-volume production & teams",
+      "monthlyPrice": 79,
+      "yearlyPrice": 790,
+      "credits": 60000,
+      "durationDays": 30,
+      "features": [
+        "60,000 monthly synthesis credits",
+        "Full 22,000+ voice catalog search",
+        "Commercial broadcast exports",
+        "Priority support & custom voices"
+      ],
+      "isActive": true,
+      "isFeatured": false,
+      "displayOrder": 3,
+      "createdAt": "2026-11-13T12:15:26.897Z",
+      "updatedAt": "2026-11-13T12:15:26.897Z"
+    }
+  ],
+  "apiIntegrations": [
+    {
+      "id": "int_openspeaker_primary",
+      "providerName": "OpenSpeaker / ElevenLabs Gateway",
+      "providerType": "openspeaker",
+      "endpointUrl": "https://api.ai33.pro",
+      "modelName": "eleven_multilingual_v2",
+      "encryptedApiKey": "Zb2tOC3lQInvYIl5:8ep8fhEUxFu/adgmu5cQBw==:4U8uV1fm0zGmyZskWWda/fHBDRL4FPnTC+demFBo+DojRpeqLhDZAPQhcPX7XnpyPyl0",
+      "maskedKey": "sk_t••••••••cqtw",
+      "isEnabled": true,
+      "isPrimary": true,
+      "rateLimitPerMin": 60,
+      "usageCount": 122,
+      "totalEstimatedCostUsd": 0,
+      "lastTestedAt": "2026-11-14T02:28:53.431Z",
+      "lastStatus": "connected",
+      "lastStatusMessage": "Operational",
+      "recentErrors": [],
+      "createdAt": "2026-11-13T12:15:26.897Z",
+      "updatedAt": "2026-11-14T02:28:53.431Z"
+    }
+  ],
+  "projects": [],
+  "speechHistory": [],
+  "voiceOverrides": [],
+  "platformSettings": {
+    "siteName": "Speakly Studio",
+    "logoUrl": "",
+    "faviconUrl": "",
+    "supportEmail": "support@speaklystudio.ai",
+    "contactInfo": "Speakly Studio Operations · Monday–Friday, 9:00–18:00 UTC",
+    "defaultCredits": 0,
+    "defaultPlanId": "plan_starter",
+    "allowRegistration": true,
+    "signupBonusEnabled": true,
+    "signupBonusCredits": 5000,
+    "creditCostPer1kChars": 65,
+    "transcriptSurchargePercent": 25,
+    "paymentInstructions": "Send the exact plan amount via Bank Transfer, Wise, or USDT (TRC20), then upload a clear payment receipt screenshot along with your Transaction ID below. An administrator will review and activate your credits shortly.",
+    "acceptedPaymentMethods": [
+      "Bank Transfer",
+      "Wise",
+      "PayPal",
+      "USDT (TRC20)",
+      "Card / Invoice"
+    ],
+    "notifyAdminOnNewPayment": true,
+    "notifyUserOnPaymentDecision": true,
+    "maxTextChars": 50000,
+    "supportedLanguages": [
+      "English",
+      "Spanish",
+      "French",
+      "German",
+      "Italian",
+      "Portuguese",
+      "Japanese",
+      "Arabic",
+      "Hindi",
+      "Korean"
+    ],
+    "maintenanceMode": false,
+    "maintenanceMessage": "Speakly Studio is currently undergoing scheduled maintenance. Please check back shortly.",
+    "updatedAt": "2026-11-13T12:15:26.897Z"
+  },
+  "auditLogs": [],
+  "userNotifications": []
+}

@@ -1,0 +1,334 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'officeahmadraza@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidUserPublic(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'status', 'planId', 'planName', 'remainingCredits', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'status', 'planId', 'planName', 'billingCycle', 'remainingCredits', 'totalPurchasedCredits', 'totalConsumedCredits', 'authProvider', 'googleSub', 'welcomeBonusClaimed', 'welcomeBonusAmount', 'welcomeBonusAwardedAt', 'createdAt', 'updatedAt', 'lastLoginAt'])
+        && data.uid == userId
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.role == 'user'
+        && data.status in ['active', 'suspended']
+        && isValidId(data.planId)
+        && data.planName is string && data.planName.size() >= 1 && data.planName.size() <= 64
+        && data.remainingCredits is number && data.remainingCredits >= 0
+        && (!data.keys().hasAny(['totalPurchasedCredits']) || (data.totalPurchasedCredits is number && data.totalPurchasedCredits >= 0))
+        && (!data.keys().hasAny(['totalConsumedCredits']) || (data.totalConsumedCredits is number && data.totalConsumedCredits >= 0))
+        && (!data.keys().hasAny(['billingCycle']) || data.billingCycle in ['monthly', 'yearly', 'lifetime'])
+        && (!data.keys().hasAny(['authProvider']) || data.authProvider in ['google', 'other'])
+        && (!data.keys().hasAny(['googleSub']) || (data.googleSub is string && data.googleSub.size() <= 128))
+        && (!data.keys().hasAny(['welcomeBonusClaimed']) || data.welcomeBonusClaimed is bool)
+        && (!data.keys().hasAny(['welcomeBonusAmount']) || (data.welcomeBonusAmount is number && data.welcomeBonusAmount >= 0))
+        && (!data.keys().hasAny(['welcomeBonusAwardedAt']) || data.welcomeBonusAwardedAt == null || (data.welcomeBonusAwardedAt is string && data.welcomeBonusAwardedAt.size() <= 64));
+    }
+
+    function isValidUserPrivate(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'notifyOnComplete', 'notifyAccountAlerts', 'defaultLanguage', 'defaultSpeed', 'updatedAt'])
+        && data.uid == userId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && (!data.keys().hasAny(['notifyOnComplete']) || data.notifyOnComplete is bool)
+        && (!data.keys().hasAny(['notifyAccountAlerts']) || data.notifyAccountAlerts is bool)
+        && (!data.keys().hasAny(['defaultLanguage']) || (data.defaultLanguage is string && data.defaultLanguage.size() <= 64))
+        && (!data.keys().hasAny(['defaultSpeed']) || (data.defaultSpeed is number && data.defaultSpeed >= 0.5 && data.defaultSpeed <= 1.5));
+    }
+
+    function isValidProject(data, projectId) {
+      return isValidId(projectId)
+        && data.keys().hasAll(['id', 'userId', 'name', 'script', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'userId', 'name', 'description', 'script', 'voiceId', 'voiceName', 'speed', 'withTranscript', 'fileName', 'status', 'createdAt', 'updatedAt'])
+        && data.id == projectId
+        && isValidId(data.userId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && (!data.keys().hasAny(['description']) || (data.description is string && data.description.size() <= 500))
+        && data.script is string && data.script.size() <= 500000
+        && (!data.keys().hasAny(['voiceId']) || (data.voiceId is string && data.voiceId.size() <= 128))
+        && (!data.keys().hasAny(['voiceName']) || (data.voiceName is string && data.voiceName.size() <= 160))
+        && (!data.keys().hasAny(['speed']) || (data.speed is number && data.speed >= 0.5 && data.speed <= 1.5))
+        && (!data.keys().hasAny(['withTranscript']) || data.withTranscript is bool)
+        && (!data.keys().hasAny(['fileName']) || (data.fileName is string && data.fileName.size() <= 128))
+        && data.status in ['active', 'archived'];
+    }
+
+    function isValidPaymentRequest(data, paymentId) {
+      return isValidId(paymentId)
+        && data.keys().hasAll(['id', 'userId', 'planId', 'planName', 'billingCycle', 'amountUsd', 'creditsToGrant', 'paymentMethod', 'transactionId', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'userId', 'planId', 'planName', 'billingCycle', 'amountUsd', 'creditsToGrant', 'paymentMethod', 'transactionId', 'status', 'rejectionReason', 'adminNote', 'createdAt', 'updatedAt'])
+        && data.id == paymentId
+        && isValidId(data.userId)
+        && isValidId(data.planId)
+        && data.planName is string && data.planName.size() >= 1 && data.planName.size() <= 80
+        && data.billingCycle in ['monthly', 'yearly']
+        && data.amountUsd is number && data.amountUsd >= 0
+        && data.creditsToGrant is number && data.creditsToGrant > 0
+        && data.paymentMethod is string && data.paymentMethod.size() >= 1 && data.paymentMethod.size() <= 64
+        && data.transactionId is string && data.transactionId.size() >= 2 && data.transactionId.size() <= 128
+        && data.status in ['pending', 'approved', 'rejected', 'cancelled']
+        && (!data.keys().hasAny(['rejectionReason']) || (data.rejectionReason is string && data.rejectionReason.size() <= 500))
+        && (!data.keys().hasAny(['adminNote']) || (data.adminNote is string && data.adminNote.size() <= 500));
+    }
+
+    function isValidPaymentReceipt(data, paymentId) {
+      return isValidId(paymentId)
+        && data.keys().hasAll(['paymentId', 'userId', 'dataUrl', 'createdAt'])
+        && data.keys().hasOnly(['paymentId', 'userId', 'dataUrl', 'createdAt'])
+        && data.paymentId == paymentId
+        && isValidId(data.userId)
+        && data.dataUrl is string && data.dataUrl.size() >= 10 && data.dataUrl.size() <= 524288;
+    }
+
+    function isValidSpeechHistory(data, genId) {
+      return isValidId(genId)
+        && data.keys().hasAll(['id', 'userId', 'taskId', 'voiceId', 'voiceName', 'text', 'charCount', 'wordCount', 'status', 'createdAt'])
+        && data.keys().hasOnly(['id', 'userId', 'taskId', 'voiceId', 'voiceName', 'projectId', 'text', 'charCount', 'wordCount', 'speed', 'withTranscript', 'hasTranscript', 'fileName', 'audioUrl', 'creditCost', 'status', 'errorMessage', 'createdAt'])
+        && data.id == genId
+        && isValidId(data.userId)
+        && data.taskId is string && data.taskId.size() >= 1 && data.taskId.size() <= 128
+        && data.voiceId is string && data.voiceId.size() >= 1 && data.voiceId.size() <= 128
+        && data.voiceName is string && data.voiceName.size() >= 1 && data.voiceName.size() <= 160
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 500000
+        && data.charCount is number && data.charCount >= 0
+        && data.wordCount is number && data.wordCount >= 0
+        && (!data.keys().hasAny(['withTranscript']) || data.withTranscript is bool)
+        && (!data.keys().hasAny(['hasTranscript']) || data.hasTranscript is bool)
+        && data.status in ['completed', 'simulated', 'failed'];
+    }
+
+    function isValidNotification(data, notifId) {
+      return isValidId(notifId)
+        && data.keys().hasAll(['id', 'userId', 'title', 'message', 'type', 'read', 'createdAt'])
+        && data.keys().hasOnly(['id', 'userId', 'title', 'message', 'type', 'read', 'createdAt'])
+        && data.id == notifId
+        && isValidId(data.userId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 500
+        && data.type in ['info', 'success', 'warning', 'error']
+        && data.read is bool;
+    }
+
+    // Health probe path for boot connection validation
+    match /test/connection {
+      allow get: if true;
+      allow write: if false;
+    }
+
+    // Users public metadata
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserPublic(incoming(), userId)
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isValidUserPublic(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastLoginAt', 'updatedAt']))
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Users isolated PII subcollection
+    match /users/{userId}/private/{docId} {
+      allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+      allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow create: if isValidId(userId) && isValidId(docId)
+        && (isOwner(userId) || isAdmin())
+        && isValidUserPrivate(incoming(), userId)
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isValidId(docId)
+        && (isOwner(userId) || isAdmin())
+        && isValidUserPrivate(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Pricing plans (public readable, admin writable)
+    match /pricing_plans/{planId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(planId) && isAdmin();
+    }
+
+    // Public platform configuration (public readable, admin writable)
+    match /platform_public/{docId} {
+      allow get: if isValidId(docId);
+      allow list: if true;
+      allow create, update, delete: if isValidId(docId) && isAdmin();
+    }
+
+    // Voice overrides (public readable, admin writable)
+    match /voice_overrides/{voiceId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(voiceId) && isAdmin();
+    }
+
+    // Payment requests
+    match /payment_requests/{paymentId} {
+      allow get: if isValidId(paymentId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(paymentId)
+        && isVerifiedUser()
+        && isValidPaymentRequest(incoming(), paymentId)
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/pricing_plans/$(incoming().planId));
+      allow update: if isValidId(paymentId)
+        && isValidPaymentRequest(incoming(), paymentId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isVerifiedUser()
+            && existing().userId == request.auth.uid
+            && existing().status == 'pending'
+            && incoming().status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(paymentId) && isAdmin();
+    }
+
+    // Payment receipts
+    match /payment_receipts/{paymentId} {
+      allow get: if isValidId(paymentId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(paymentId)
+        && isVerifiedUser()
+        && isValidPaymentReceipt(incoming(), paymentId)
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time
+        && existsAfter(/databases/$(database)/documents/payment_requests/$(paymentId));
+      allow update: if false;
+      allow delete: if isValidId(paymentId) && isAdmin();
+    }
+
+    // Credit transactions (immutable for users, readable by owner/admin)
+    match /credit_transactions/{txId} {
+      allow get: if isValidId(txId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(txId) && isAdmin();
+      allow update, delete: if false;
+    }
+
+    // Projects
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(projectId)
+        && isVerifiedUser()
+        && isValidProject(incoming(), projectId)
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(projectId)
+        && isValidProject(incoming(), projectId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isVerifiedUser()
+            && existing().userId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'script', 'voiceId', 'voiceName', 'speed', 'withTranscript', 'fileName', 'status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(projectId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+    }
+
+    // Speech history
+    match /speech_history/{genId} {
+      allow get: if isValidId(genId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(genId)
+        && isVerifiedUser()
+        && isValidSpeechHistory(incoming(), genId)
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(genId) && isAdmin();
+      allow delete: if isValidId(genId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+    }
+
+    // User notifications
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(notifId) && isAdmin();
+      allow update: if isValidId(notifId)
+        && isValidNotification(incoming(), notifId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          (isVerifiedUser() && existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['read']))
+        );
+      allow delete: if isValidId(notifId) && isAdmin();
+    }
+
+    // Strictly server-only collections (zero client access)
+    match /admins/{adminUid} {
+      allow read, write: if false;
+    }
+    match /admin_accounts/{adminId} {
+      allow read, write: if false;
+    }
+    match /api_integrations/{integrationId} {
+      allow read, write: if false;
+    }
+    match /audit_logs/{logId} {
+      allow read, write: if false;
+    }
+    match /welcome_bonus_claims/{claimId} {
+      allow read, write: if false;
+    }
+  }
+}

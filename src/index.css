@@ -1,0 +1,193 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@layer base {
+  :root {
+    font-family: "Plus Jakarta Sans", sans-serif;
+    font-optical-sizing: auto;
+    font-style: normal;
+    --bg-app: #F7F8FA;
+    --surface-primary: #FFFFFF;
+    --surface-secondary: #EEF2FF;
+    --surface-subtle: #F2F4F8;
+    --text-primary: #11162B;
+    --text-secondary: #5A6580;
+    --text-muted: #78839E;
+    --border-subtle: #E4E7EF;
+    --border-strong: #CFD6E6;
+    --accent-primary: #2E5BFF;
+    --accent-secondary: #4D74FF;
+    --accent-hover: #234AE0;
+    --accent-soft: #EEF2FF;
+    --status-success: #16A34A;
+    --status-warning: #D97706;
+    --status-error: #DC2626;
+  }
+
+  .dark {
+    --bg-app: #090C12;
+    --surface-primary: #101521;
+    --surface-secondary: #171E2E;
+    --surface-subtle: #0D121D;
+    --text-primary: #F3F5FA;
+    --text-secondary: #A2ADC7;
+    --text-muted: #7C87A3;
+    --border-subtle: #1E2638;
+    --border-strong: #2C364F;
+    --accent-primary: #4D74FF;
+    --accent-secondary: #6687FF;
+    --accent-hover: #6687FF;
+    --accent-soft: rgba(77, 116, 255, 0.14);
+    --status-success: #22C55E;
+    --status-warning: #F59E0B;
+    --status-error: #F87171;
+  }
+
+  html, body {
+    font-family: "Plus Jakarta Sans", sans-serif;
+    font-optical-sizing: auto;
+    font-style: normal;
+  }
+
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    text-rendering: optimizeLegibility;
+  }
+
+  .dark body {
+    letter-spacing: 0.005em;
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: "Plus Jakarta Sans", sans-serif;
+    font-optical-sizing: auto;
+    text-wrap: balance;
+  }
+
+  button, input, select, textarea {
+    font-family: inherit;
+  }
+
+  code, pre, kbd, .font-mono {
+    font-family: "Plus Jakarta Sans", sans-serif;
+    font-optical-sizing: auto;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Precision studio slider styling */
+input[type="range"].studio-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+}
+
+input[type="range"].studio-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #FFFFFF;
+  border: 2.5px solid #2E5BFF;
+  box-shadow: 0 1px 4px rgba(17, 22, 43, 0.18);
+  cursor: pointer;
+  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dark input[type="range"].studio-slider::-webkit-slider-thumb {
+  background: #101521;
+  border-color: #4D74FF;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+input[type="range"].studio-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 4px rgba(46, 91, 255, 0.14);
+}
+
+input[type="range"].studio-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(46, 91, 255, 0.25);
+}
+
+/* Waveform animation for generation & active audio */
+@keyframes waveform-bar {
+  0%, 100% {
+    transform: scaleY(0.32);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-waveform-bar {
+  animation: waveform-bar 0.85s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Modal & panel entrance */
+@keyframes studio-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-studio-enter {
+  animation: studio-enter 0.16s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-waveform-bar,
+  .animate-pulse,
+  .animate-spin,
+  .animate-studio-enter {
+    animation: none !important;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Studio Precision Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #D2D8E6;
+  border-radius: 3px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #242D42;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #B0B9CE;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #364362;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -1,0 +1,281 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Non-PII user account metadata, active plan, status, and credit summary.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["user"] },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "planName": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "billingCycle": { "type": "string", "enum": ["monthly", "yearly", "lifetime"] },
+        "remainingCredits": { "type": "number" },
+        "totalPurchasedCredits": { "type": "number" },
+        "totalConsumedCredits": { "type": "number" },
+        "authProvider": { "type": "string", "enum": ["google", "other"] },
+        "googleSub": { "type": "string", "maxLength": 128 },
+        "welcomeBonusClaimed": { "type": "boolean" },
+        "welcomeBonusAmount": { "type": "number" },
+        "welcomeBonusAwardedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "status", "planId", "planName", "remainingCredits", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document for user email and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "notifyOnComplete": { "type": "boolean" },
+        "notifyAccountAlerts": { "type": "boolean" },
+        "defaultLanguage": { "type": "string", "maxLength": 64 },
+        "defaultSpeed": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "PricingPlan": {
+      "title": "PricingPlan",
+      "description": "Subscription pricing tier configured by administrators.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "audience": { "type": "string", "maxLength": 200 },
+        "monthlyPrice": { "type": "number" },
+        "yearlyPrice": { "type": "number" },
+        "credits": { "type": "number" },
+        "durationDays": { "type": "number" },
+        "displayOrder": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "isFeatured": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "monthlyPrice", "yearlyPrice", "credits", "durationDays", "displayOrder", "isActive", "isFeatured", "updatedAt"]
+    },
+    "PaymentRequest": {
+      "title": "PaymentRequest",
+      "description": "User payment submission awaiting administrative verification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "planName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "billingCycle": { "type": "string", "enum": ["monthly", "yearly"] },
+        "amountUsd": { "type": "number" },
+        "creditsToGrant": { "type": "number" },
+        "paymentMethod": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "transactionId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled"] },
+        "rejectionReason": { "type": "string", "maxLength": 500 },
+        "adminNote": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "planId", "planName", "billingCycle", "amountUsd", "creditsToGrant", "paymentMethod", "transactionId", "status", "createdAt", "updatedAt"]
+    },
+    "PaymentReceipt": {
+      "title": "PaymentReceipt",
+      "description": "Compressed receipt image payload linked to a payment request.",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "dataUrl": { "type": "string", "minLength": 10, "maxLength": 524288 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["paymentId", "userId", "dataUrl", "createdAt"]
+    },
+    "CreditTransaction": {
+      "title": "CreditTransaction",
+      "description": "Permanent immutable credit ledger record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "googleSub": { "type": "string", "maxLength": 128 },
+        "previousBalance": { "type": "number" },
+        "amount": { "type": "number" },
+        "newBalance": { "type": "number" },
+        "type": { "type": "string", "enum": ["signup_bonus", "initial_grant", "purchase", "consumption", "manual_add", "manual_deduct", "balance_override", "refund"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "adminId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "previousBalance", "amount", "newBalance", "type", "reason", "createdAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Saved user narration project and voice configuration.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 500 },
+        "script": { "type": "string", "maxLength": 500000 },
+        "voiceId": { "type": "string", "maxLength": 128 },
+        "voiceName": { "type": "string", "maxLength": 160 },
+        "speed": { "type": "number" },
+        "withTranscript": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "archived"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name", "script", "status", "createdAt", "updatedAt"]
+    },
+    "SpeechGeneration": {
+      "title": "SpeechGeneration",
+      "description": "Text-to-speech synthesis record and parameters.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "voiceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "voiceName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 500000 },
+        "charCount": { "type": "number" },
+        "wordCount": { "type": "number" },
+        "withTranscript": { "type": "boolean" },
+        "hasTranscript": { "type": "boolean" },
+        "creditCost": { "type": "number" },
+        "status": { "type": "string", "enum": ["completed", "simulated", "failed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "taskId", "voiceId", "voiceName", "text", "charCount", "wordCount", "status", "createdAt"]
+    },
+    "VoiceOverride": {
+      "title": "VoiceOverride",
+      "description": "Admin voice catalog metadata, visibility, and tier availability overrides.",
+      "type": "object",
+      "properties": {
+        "voiceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "enabled": { "type": "boolean" },
+        "customName": { "type": "string", "maxLength": 160 },
+        "customCategory": { "type": "string", "maxLength": 80 },
+        "customLanguage": { "type": "string", "maxLength": 80 },
+        "isCustomAdded": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["voiceId", "enabled", "updatedAt"]
+    },
+    "PlatformPublicSettings": {
+      "title": "PlatformPublicSettings",
+      "description": "Publicly readable non-sensitive platform configuration.",
+      "type": "object",
+      "properties": {
+        "siteName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "supportEmail": { "type": "string", "maxLength": 200 },
+        "maintenanceMode": { "type": "boolean" },
+        "allowRegistration": { "type": "boolean" },
+        "signupBonusEnabled": { "type": "boolean" },
+        "signupBonusCredits": { "type": "number" },
+        "defaultCredits": { "type": "number" },
+        "creditCostPer1kChars": { "type": "number" },
+        "transcriptSurchargePercent": { "type": "number" },
+        "maxTextChars": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["siteName", "maintenanceMode", "allowRegistration", "defaultCredits", "maxTextChars", "updatedAt"]
+    },
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "User notification entry created by system or admin actions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "type": { "type": "string", "enum": ["info", "success", "warning", "error"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "message", "type", "read", "createdAt"]
+    },
+    "ServerOnlyRecord": {
+      "title": "ServerOnlyRecord",
+      "description": "Locked administrative, API integration, and immutable audit records accessible strictly on the server.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" }
+      },
+      "required": ["id"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public user account metadata without PII."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII document containing user email and private preferences."
+    },
+    "/pricing_plans/{planId}": {
+      "schema": { "$ref": "#/entities/PricingPlan" },
+      "description": "Dynamic subscription pricing tiers managed by administrators."
+    },
+    "/payment_requests/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentRequest" },
+      "description": "User payment submissions and approval state."
+    },
+    "/payment_receipts/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentReceipt" },
+      "description": "Compressed receipt images linked to payment requests."
+    },
+    "/credit_transactions/{txId}": {
+      "schema": { "$ref": "#/entities/CreditTransaction" },
+      "description": "Immutable credit balance ledger."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "User narration projects."
+    },
+    "/speech_history/{genId}": {
+      "schema": { "$ref": "#/entities/SpeechGeneration" },
+      "description": "User speech generation records."
+    },
+    "/voice_overrides/{voiceId}": {
+      "schema": { "$ref": "#/entities/VoiceOverride" },
+      "description": "Admin voice availability and metadata overrides."
+    },
+    "/platform_public/{docId}": {
+      "schema": { "$ref": "#/entities/PlatformPublicSettings" },
+      "description": "Non-sensitive platform configuration synced to public UI."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/UserNotification" },
+      "description": "Per-user notifications."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/ServerOnlyRecord" },
+      "description": "Trusted admin UID registry."
+    },
+    "/admin_accounts/{adminId}": {
+      "schema": { "$ref": "#/entities/ServerOnlyRecord" },
+      "description": "Server-only admin credentials and RBAC assignments."
+    },
+    "/api_integrations/{integrationId}": {
+      "schema": { "$ref": "#/entities/ServerOnlyRecord" },
+      "description": "Server-only encrypted AI Speech API credentials."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ServerOnlyRecord" },
+      "description": "Server-only immutable administrator audit log."
+    },
+    "/welcome_bonus_claims/{claimId}": {
+      "schema": { "$ref": "#/entities/ServerOnlyRecord" },
+      "description": "Server-only permanent Google identity welcome bonus claims registry."
+    }
+  }
+}
