@@ -220,6 +220,28 @@ export interface CreateTTSPayload {
   fileName?: string;
 }
 
+const taskMetaTokenMap = new Map<string, string>();
+
+function saveTaskMetaToken(taskId: string, token?: string) {
+  if (!token) return;
+  taskMetaTokenMap.set(taskId, token);
+  try {
+    window.sessionStorage.setItem(`speakly_task_meta_${taskId}`, token);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function getTaskMetaToken(taskId: string): string | null {
+  const mem = taskMetaTokenMap.get(taskId);
+  if (mem) return mem;
+  try {
+    return window.sessionStorage.getItem(`speakly_task_meta_${taskId}`);
+  } catch {
+    return null;
+  }
+}
+
 export async function createTTSSpeech(payload: CreateTTSPayload): Promise<{
   success: boolean;
   taskId: string;
@@ -227,6 +249,7 @@ export async function createTTSSpeech(payload: CreateTTSPayload): Promise<{
   characterCount: number;
   wordCount: number;
   fileName?: string;
+  taskMetaToken?: string;
 }> {
   const { getFirebaseIdToken } = await import('../firebase.js');
   const token = await getFirebaseIdToken().catch(() => null);
@@ -240,13 +263,30 @@ export async function createTTSSpeech(payload: CreateTTSPayload): Promise<{
     headers,
     body: JSON.stringify(payload),
   });
-  return handleResponse(res);
+  const data = await handleResponse<{
+    success: boolean;
+    taskId: string;
+    voiceId: string;
+    characterCount: number;
+    wordCount: number;
+    fileName?: string;
+    taskMetaToken?: string;
+  }>(res);
+  saveTaskMetaToken(data.taskId, data.taskMetaToken);
+  return data;
 }
 
 export async function fetchTaskStatus(
   taskId: string
 ): Promise<TaskStatusResponse & { updatedRemainingCredits?: number }> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+  const { getFirebaseIdToken } = await import('../firebase.js');
+  const token = await getFirebaseIdToken().catch(() => null);
+  const metaToken = getTaskMetaToken(taskId);
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (metaToken) headers['X-Task-Meta'] = metaToken;
+
+  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { headers });
   const data = await handleResponse<{
     success: boolean;
     task: TaskStatusResponse;

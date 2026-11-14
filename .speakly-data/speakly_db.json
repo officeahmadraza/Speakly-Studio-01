@@ -97,14 +97,14 @@
       "isEnabled": true,
       "isPrimary": true,
       "rateLimitPerMin": 60,
-      "usageCount": 171,
+      "usageCount": 231,
       "totalEstimatedCostUsd": 0,
-      "lastTestedAt": "2026-11-14T03:41:35.506Z",
+      "lastTestedAt": "2026-11-14T04:17:22.032Z",
       "lastStatus": "connected",
       "lastStatusMessage": "Operational",
       "recentErrors": [],
       "createdAt": "2026-11-13T12:15:26.897Z",
-      "updatedAt": "2026-11-14T03:41:35.506Z"
+      "updatedAt": "2026-11-14T04:17:22.032Z"
     }
   ],
   "projects": [],

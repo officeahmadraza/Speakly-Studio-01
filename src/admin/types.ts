@@ -36,6 +36,10 @@ export interface AdminAuthStatus {
   authenticated: boolean;
   admin: AdminAccountPublic | null;
   databaseMode: string;
+  adminSdkConfigured?: boolean;
+  firestoreMode?: string;
+  firestoreConnected?: boolean;
+  lastFirestoreError?: string | null;
 }
 
 export interface AdminOverviewData {

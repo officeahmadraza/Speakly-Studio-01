@@ -39,7 +39,7 @@ service cloud.firestore {
 
     function isValidUserPublic(data, userId) {
       return data.keys().hasAll(['uid', 'displayName', 'role', 'status', 'planId', 'planName', 'remainingCredits', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'role', 'status', 'planId', 'planName', 'billingCycle', 'remainingCredits', 'totalPurchasedCredits', 'totalConsumedCredits', 'authProvider', 'googleSub', 'welcomeBonusClaimed', 'welcomeBonusAmount', 'welcomeBonusAwardedAt', 'createdAt', 'updatedAt', 'lastLoginAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'status', 'planId', 'planName', 'billingCycle', 'remainingCredits', 'totalPurchasedCredits', 'totalConsumedCredits', 'authProvider', 'googleSub', 'welcomeBonusClaimed', 'welcomeBonusAmount', 'welcomeBonusAwardedAt', 'avatarUrl', 'subscriptionExpiresAt', 'notes', 'createdAt', 'updatedAt', 'lastLoginAt'])
         && data.uid == userId
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
         && data.role == 'user'
@@ -54,7 +54,10 @@ service cloud.firestore {
         && (!data.keys().hasAny(['googleSub']) || (data.googleSub is string && data.googleSub.size() <= 128))
         && (!data.keys().hasAny(['welcomeBonusClaimed']) || data.welcomeBonusClaimed is bool)
         && (!data.keys().hasAny(['welcomeBonusAmount']) || (data.welcomeBonusAmount is number && data.welcomeBonusAmount >= 0))
-        && (!data.keys().hasAny(['welcomeBonusAwardedAt']) || data.welcomeBonusAwardedAt == null || (data.welcomeBonusAwardedAt is string && data.welcomeBonusAwardedAt.size() <= 64));
+        && (!data.keys().hasAny(['welcomeBonusAwardedAt']) || data.welcomeBonusAwardedAt == null || (data.welcomeBonusAwardedAt is string && data.welcomeBonusAwardedAt.size() <= 64))
+        && (!data.keys().hasAny(['avatarUrl']) || (data.avatarUrl is string && data.avatarUrl.size() <= 512))
+        && (!data.keys().hasAny(['subscriptionExpiresAt']) || data.subscriptionExpiresAt == null || (data.subscriptionExpiresAt is string && data.subscriptionExpiresAt.size() <= 64))
+        && (!data.keys().hasAny(['notes']) || (data.notes is string && data.notes.size() <= 2000));
     }
 
     function isValidUserPrivate(data, userId) {
@@ -88,7 +91,7 @@ service cloud.firestore {
     function isValidPaymentRequest(data, paymentId) {
       return isValidId(paymentId)
         && data.keys().hasAll(['id', 'userId', 'planId', 'planName', 'billingCycle', 'amountUsd', 'creditsToGrant', 'paymentMethod', 'transactionId', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'userId', 'planId', 'planName', 'billingCycle', 'amountUsd', 'creditsToGrant', 'paymentMethod', 'transactionId', 'status', 'rejectionReason', 'adminNote', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'userId', 'planId', 'planName', 'billingCycle', 'amountUsd', 'creditsToGrant', 'paymentMethod', 'transactionId', 'status', 'rejectionReason', 'adminNote', 'reviewedByAdminId', 'reviewedByEmail', 'reviewedAt', 'creditTransactionId', 'createdAt', 'updatedAt'])
         && data.id == paymentId
         && isValidId(data.userId)
         && isValidId(data.planId)
@@ -100,7 +103,11 @@ service cloud.firestore {
         && data.transactionId is string && data.transactionId.size() >= 2 && data.transactionId.size() <= 128
         && data.status in ['pending', 'approved', 'rejected', 'cancelled']
         && (!data.keys().hasAny(['rejectionReason']) || (data.rejectionReason is string && data.rejectionReason.size() <= 500))
-        && (!data.keys().hasAny(['adminNote']) || (data.adminNote is string && data.adminNote.size() <= 500));
+        && (!data.keys().hasAny(['adminNote']) || (data.adminNote is string && data.adminNote.size() <= 500))
+        && (!data.keys().hasAny(['reviewedByAdminId']) || (data.reviewedByAdminId is string && data.reviewedByAdminId.size() <= 128))
+        && (!data.keys().hasAny(['reviewedByEmail']) || (data.reviewedByEmail is string && data.reviewedByEmail.size() <= 254))
+        && (!data.keys().hasAny(['reviewedAt']) || data.reviewedAt == null || (data.reviewedAt is string && data.reviewedAt.size() <= 64))
+        && (!data.keys().hasAny(['creditTransactionId']) || (data.creditTransactionId is string && data.creditTransactionId.size() <= 128));
     }
 
     function isValidPaymentReceipt(data, paymentId) {
@@ -115,7 +122,7 @@ service cloud.firestore {
     function isValidSpeechHistory(data, genId) {
       return isValidId(genId)
         && data.keys().hasAll(['id', 'userId', 'taskId', 'voiceId', 'voiceName', 'text', 'charCount', 'wordCount', 'status', 'createdAt'])
-        && data.keys().hasOnly(['id', 'userId', 'taskId', 'voiceId', 'voiceName', 'projectId', 'text', 'charCount', 'wordCount', 'speed', 'withTranscript', 'hasTranscript', 'fileName', 'audioUrl', 'creditCost', 'status', 'errorMessage', 'createdAt'])
+        && data.keys().hasOnly(['id', 'userId', 'taskId', 'voiceId', 'voiceName', 'projectId', 'text', 'charCount', 'wordCount', 'speed', 'withTranscript', 'hasTranscript', 'fileName', 'audioUrl', 'creditCost', 'estimatedDurationSec', 'language', 'status', 'errorMessage', 'createdAt'])
         && data.id == genId
         && isValidId(data.userId)
         && data.taskId is string && data.taskId.size() >= 1 && data.taskId.size() <= 128
@@ -126,7 +133,23 @@ service cloud.firestore {
         && data.wordCount is number && data.wordCount >= 0
         && (!data.keys().hasAny(['withTranscript']) || data.withTranscript is bool)
         && (!data.keys().hasAny(['hasTranscript']) || data.hasTranscript is bool)
+        && (!data.keys().hasAny(['estimatedDurationSec']) || (data.estimatedDurationSec is number && data.estimatedDurationSec >= 0))
+        && (!data.keys().hasAny(['language']) || (data.language is string && data.language.size() <= 64))
         && data.status in ['completed', 'simulated', 'failed'];
+    }
+
+    function isValidAuditLog(data, logId) {
+      return isValidId(logId)
+        && data.keys().hasAll(['id', 'adminId', 'adminEmail', 'adminRole', 'action', 'targetType', 'targetId', 'ipAddress', 'createdAt'])
+        && data.keys().hasOnly(['id', 'adminId', 'adminEmail', 'adminRole', 'action', 'targetType', 'targetId', 'previousValue', 'newValue', 'ipAddress', 'createdAt'])
+        && data.id == logId
+        && data.adminId is string && data.adminId.size() >= 1 && data.adminId.size() <= 128
+        && data.adminEmail is string && data.adminEmail.size() >= 3 && data.adminEmail.size() <= 254
+        && data.adminRole is string && data.adminRole.size() >= 1 && data.adminRole.size() <= 64
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 128
+        && data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 64
+        && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128
+        && data.ipAddress is string && data.ipAddress.size() <= 128;
     }
 
     function isValidNotification(data, notifId) {
@@ -164,7 +187,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           isAdmin() ||
-          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastLoginAt', 'updatedAt']))
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'lastLoginAt', 'updatedAt']))
         );
       allow delete: if isValidId(userId) && isAdmin();
     }
@@ -325,7 +348,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /audit_logs/{logId} {
-      allow read, write: if false;
+      allow get, list: if isAdmin();
+      allow create: if isValidId(logId)
+        && isAdmin()
+        && isValidAuditLog(incoming(), logId)
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
     }
     match /welcome_bonus_claims/{claimId} {
       allow read, write: if false;

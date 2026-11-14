@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { readDatabase, runDbTransaction } from '../db/database.js';
+import { hydrateDatabaseFromFirestore, runDbTransaction } from '../db/database.js';
+import { sanitizeFirestoreId } from '../db/firestorePersistence.js';
 import { verifyFirebaseIdToken, VerifiedFirebaseUser } from '../services/firebaseTokenVerifier.js';
 import { resolveActiveApiConfig } from '../services/openspeakerClient.js';
 import { DbUser } from '../types/admin.js';
@@ -10,6 +11,17 @@ const router = express.Router();
 
 export interface UserAuthenticatedRequest extends Request {
   firebaseUser?: VerifiedFirebaseUser;
+  firebaseToken?: string;
+}
+
+function getUserFirestoreContext(req: UserAuthenticatedRequest) {
+  const u = req.firebaseUser!;
+  return {
+    firebaseIdToken: req.firebaseToken,
+    isAdminToken: Boolean(u.emailVerified && u.email.toLowerCase() === 'officeahmadraza@gmail.com'),
+    uid: u.uid,
+    requireFirestore: true,
+  };
 }
 
 export async function optionalFirebaseUser(req: Request): Promise<VerifiedFirebaseUser | null> {
@@ -42,6 +54,7 @@ async function requireFirebaseUser(
       return;
     }
     req.firebaseUser = verified;
+    req.firebaseToken = token;
     next();
   } catch (err: any) {
     res.status(401).json({ success: false, error: err.message || 'Invalid or expired authentication token.' });
@@ -51,12 +64,13 @@ async function requireFirebaseUser(
 // ---------------------------------------------------------------------------
 // Public Bootstrap (Dynamic Plans, Branding, Settings, Maintenance Status)
 // ---------------------------------------------------------------------------
-router.get('/public/bootstrap', (_req: Request, res: Response) => {
-  const db = readDatabase();
-  const s = db.platformSettings;
-  const activePlans = [...db.pricingPlans]
-    .filter((p) => p.isActive)
-    .sort((a, b) => a.displayOrder - b.displayOrder);
+router.get('/public/bootstrap', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore({ allowLocalFallback: true });
+    const s = db.platformSettings;
+    const activePlans = [...db.pricingPlans]
+      .filter((p) => p.isActive)
+      .sort((a, b) => a.displayOrder - b.displayOrder);
 
   const apiCfg = resolveActiveApiConfig();
 
@@ -86,6 +100,9 @@ router.get('/public/bootstrap', (_req: Request, res: Response) => {
     },
     voiceOverrides: db.voiceOverrides,
   });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -286,7 +303,7 @@ router.post('/user/sync', requireFirebaseUser, async (req: UserAuthenticatedRequ
         paymentRequests,
         notifications,
       };
-    });
+    }, getUserFirestoreContext(req));
 
     res.json({ success: true, ...payload });
   } catch (err) {
@@ -313,7 +330,7 @@ router.patch('/user/profile', requireFirebaseUser, async (req: UserAuthenticated
       if (notifyAccountAlerts !== undefined) target.notifyAccountAlerts = Boolean(notifyAccountAlerts);
       target.updatedAt = new Date().toISOString();
       return target;
-    });
+    }, getUserFirestoreContext(req));
 
     res.json({ success: true, user });
   } catch (err) {
@@ -353,7 +370,7 @@ router.post('/user/projects', requireFirebaseUser, async (req: UserAuthenticated
       }
 
       const created = {
-        id: id || `proj_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+        id: id ? sanitizeFirestoreId(String(id), 'proj') : `proj_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
         userId: uid,
         userEmail: user.email,
         userName: user.displayName,
@@ -371,7 +388,7 @@ router.post('/user/projects', requireFirebaseUser, async (req: UserAuthenticated
       };
       db.projects.unshift(created);
       return created;
-    });
+    }, getUserFirestoreContext(req));
 
     res.json({ success: true, project });
   } catch (err) {
@@ -386,7 +403,7 @@ router.delete('/user/projects/:id', requireFirebaseUser, async (req: UserAuthent
       const idx = db.projects.findIndex((p) => p.id === req.params.id && p.userId === uid);
       if (idx === -1) throw Object.assign(new Error('Project not found.'), { statusCode: 404 });
       db.projects.splice(idx, 1);
-    });
+    }, getUserFirestoreContext(req));
     res.json({ success: true });
   } catch (err) {
     next(err);
@@ -480,7 +497,7 @@ router.post('/user/payments', requireFirebaseUser, async (req: UserAuthenticated
       });
 
       return rec;
-    });
+    }, getUserFirestoreContext(req));
 
     res.status(201).json({ success: true, payment });
   } catch (err) {
@@ -500,7 +517,7 @@ router.post('/user/payments/:id/cancel', requireFirebaseUser, async (req: UserAu
       target.status = 'cancelled';
       target.updatedAt = new Date().toISOString();
       return target;
-    });
+    }, getUserFirestoreContext(req));
 
     res.json({ success: true, payment });
   } catch (err) {
@@ -515,7 +532,7 @@ router.post('/user/notifications/read-all', requireFirebaseUser, async (req: Use
       db.userNotifications.forEach((n) => {
         if (n.userId === uid) n.read = true;
       });
-    });
+    }, getUserFirestoreContext(req));
     res.json({ success: true });
   } catch (err) {
     next(err);

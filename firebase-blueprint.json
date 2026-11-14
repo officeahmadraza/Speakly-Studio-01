@@ -20,6 +20,9 @@
         "welcomeBonusClaimed": { "type": "boolean" },
         "welcomeBonusAmount": { "type": "number" },
         "welcomeBonusAwardedAt": { "type": "string", "format": "date-time" },
+        "avatarUrl": { "type": "string", "maxLength": 512 },
+        "subscriptionExpiresAt": { "type": "string", "format": "date-time" },
+        "notes": { "type": "string", "maxLength": 2000 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "lastLoginAt": { "type": "string", "format": "date-time" }
@@ -77,6 +80,10 @@
         "status": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled"] },
         "rejectionReason": { "type": "string", "maxLength": 500 },
         "adminNote": { "type": "string", "maxLength": 500 },
+        "reviewedByAdminId": { "type": "string", "maxLength": 128 },
+        "reviewedByEmail": { "type": "string", "maxLength": 254 },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "creditTransactionId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -148,6 +155,8 @@
         "withTranscript": { "type": "boolean" },
         "hasTranscript": { "type": "boolean" },
         "creditCost": { "type": "number" },
+        "estimatedDurationSec": { "type": "number" },
+        "language": { "type": "string", "maxLength": 64 },
         "status": { "type": "string", "enum": ["completed", "simulated", "failed"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },

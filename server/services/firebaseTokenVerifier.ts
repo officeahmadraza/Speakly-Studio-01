@@ -148,3 +148,53 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedFi
     isGoogleAuth: signInProvider === 'google.com' || Boolean(googleSub),
   };
 }
+
+export async function extractFirebaseContext(
+  req: { headers?: Record<string, any> },
+  opts: { requireFirestore?: boolean; allowLocalFallback?: boolean } = {}
+): Promise<{
+  firebaseIdToken?: string;
+  isAdminToken?: boolean;
+  uid?: string;
+  requireFirestore?: boolean;
+  allowLocalFallback?: boolean;
+}> {
+  const authHeader = String(req?.headers?.authorization || '');
+  const fbHeader = String(req?.headers?.['x-firebase-id-token'] || '');
+  const rawToken = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7).trim()
+    : fbHeader.trim();
+
+  if (!rawToken) {
+    return {
+      requireFirestore: opts.requireFirestore,
+      allowLocalFallback: opts.allowLocalFallback,
+    };
+  }
+
+  try {
+    const verified = await verifyFirebaseIdToken(rawToken);
+    if (!verified) {
+      return {
+        requireFirestore: opts.requireFirestore,
+        allowLocalFallback: opts.allowLocalFallback,
+      };
+    }
+    const isAdminToken = Boolean(
+      verified.emailVerified && verified.email.toLowerCase() === 'officeahmadraza@gmail.com'
+    );
+    return {
+      firebaseIdToken: rawToken,
+      isAdminToken,
+      uid: verified.uid,
+      requireFirestore: opts.requireFirestore,
+      allowLocalFallback: opts.allowLocalFallback,
+    };
+  } catch {
+    return {
+      requireFirestore: opts.requireFirestore,
+      allowLocalFallback: opts.allowLocalFallback,
+    };
+  }
+}
+

@@ -192,7 +192,8 @@ export async function authenticateAdmin(
   email: string,
   password: string,
   ipAddress: string,
-  userAgent: string
+  userAgent: string,
+  fbCtx?: { firebaseIdToken?: string; isAdminToken?: boolean; uid?: string }
 ): Promise<{
   account: ReturnType<typeof sanitizeAdminAccount>;
   signedToken: string;
@@ -283,7 +284,7 @@ export async function authenticateAdmin(
       account: sanitizeAdminAccount(account),
       signedToken,
     };
-  });
+  }, { ...(fbCtx || {}), allowLocalFallback: true });
 }
 
 const revokedSessionIds = new Set<string>();
@@ -304,7 +305,7 @@ export async function resolveAdminSession(
     if (session.expiresAt <= nowMs || nowMs - session.lastActivityAt > ADMIN_SESSION_IDLE_MS) {
       await runDbTransaction((txDb) => {
         txDb.adminSessions = txDb.adminSessions.filter((s) => s.id !== sessionId);
-      }).catch(() => undefined);
+      }, { allowLocalFallback: true }).catch(() => undefined);
       return null;
     }
 
@@ -321,7 +322,7 @@ export async function resolveAdminSession(
       await runDbTransaction((txDb) => {
         const target = txDb.adminSessions.find((s) => s.id === sessionId);
         if (target) target.lastActivityAt = nowMs;
-      }).catch(() => undefined);
+      }, { allowLocalFallback: true }).catch(() => undefined);
     }
 
     return { account, session };
@@ -352,7 +353,7 @@ export async function resolveAdminSession(
     if (!txDb.adminSessions.some((s) => s.id === sessionId)) {
       txDb.adminSessions.unshift(hydratedSession);
     }
-  }).catch(() => undefined);
+  }, { allowLocalFallback: true }).catch(() => undefined);
 
   return { account, session: hydratedSession };
 }
@@ -380,7 +381,7 @@ export async function destroyAdminSession(req: Request, res: Response): Promise<
       });
     }
     db.adminSessions = db.adminSessions.filter((s) => s.id !== sessionId);
-  });
+  }, { allowLocalFallback: true });
 }
 
 export async function requireAdminAuth(
@@ -482,7 +483,7 @@ export async function changeAdminPassword(
     });
 
     return sanitizeAdminAccount(account);
-  });
+  }, { allowLocalFallback: true });
 }
 
 export async function requestAdminPasswordReset(email: string, ipAddress: string): Promise<void> {
@@ -507,7 +508,7 @@ export async function requestAdminPasswordReset(email: string, ipAddress: string
       targetId: account.id,
       ipAddress,
     });
-  });
+  }, { allowLocalFallback: true });
 }
 
 export async function confirmAdminPasswordReset(params: {
@@ -578,5 +579,5 @@ export async function confirmAdminPasswordReset(params: {
       targetId: account.id,
       ipAddress: params.ipAddress,
     });
-  });
+  }, { allowLocalFallback: true });
 }

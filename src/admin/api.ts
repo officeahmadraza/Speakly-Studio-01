@@ -1,3 +1,4 @@
+import { getFirebaseIdToken } from '../firebase.js';
 import {
   AdminAuthStatus,
   AdminAccountPublic,
@@ -59,12 +60,14 @@ export function registerAdminUnauthorizedHandler(fn: () => void) {
 
 async function adminFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredAdminSessionToken();
+  const firebaseToken = await getFirebaseIdToken().catch(() => null);
   const res = await fetch(`/api/admin${path}`, {
     ...options,
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { 'X-Admin-Session': token } : {}),
+      ...(firebaseToken ? { 'X-Firebase-Id-Token': firebaseToken } : {}),
       ...((options.headers as Record<string, string>) || {}),
     },
   });
@@ -94,6 +97,10 @@ export const adminApi = {
       success: boolean;
       admin: AdminAccountPublic;
       sessionToken?: string;
+      adminSdkConfigured?: boolean;
+      firestoreMode?: string;
+      firestoreConnected?: boolean;
+      lastFirestoreError?: string | null;
     }>('/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),

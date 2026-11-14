@@ -2,11 +2,13 @@ import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { createRateLimiter } from '../rateLimiter.js';
 import {
-  readDatabase,
+  hydrateDatabaseFromFirestore,
   runDbTransaction,
   isSuperAdminPasswordConfigured,
   getDatabaseMode,
+  getFirestorePersistenceStatus,
 } from '../db/database.js';
+import { extractFirebaseContext } from '../services/firebaseTokenVerifier.js';
 import {
   AdminRole,
   AdminPermission,
@@ -71,12 +73,21 @@ function sanitizeIntegration(record: ApiIntegrationRecord) {
   };
 }
 
+async function getAdminReadCtx(req: Request) {
+  return extractFirebaseContext(req, { allowLocalFallback: true });
+}
+
+async function getAdminWriteCtx(req: Request) {
+  return extractFirebaseContext(req, { requireFirestore: true });
+}
+
 // ---------------------------------------------------------------------------
 // 1. Public Admin Auth Status, Login, Logout, Password Reset
 // ---------------------------------------------------------------------------
 
 router.get('/auth/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
     const superAdminConfigured = isSuperAdminPasswordConfigured();
     // Dynamically import resolveAdminSession via auth service
     const { resolveAdminSession } = await import('../services/adminAuthService.js');
@@ -87,6 +98,7 @@ router.get('/auth/status', async (req: Request, res: Response, next: NextFunctio
       authenticated: Boolean(sessionData),
       admin: sessionData ? sanitizeAdminAccount(sessionData.account) : null,
       databaseMode: getDatabaseMode(),
+      ...getFirestorePersistenceStatus(),
     });
   } catch (err) {
     next(err);
@@ -107,13 +119,15 @@ router.post('/login', adminLoginRateLimiter, async (req: Request, res: Response,
 
     const ip = getClientIp(req);
     const ua = String(req.headers['user-agent'] || '');
-    const { account, signedToken } = await authenticateAdmin(email, password, ip, ua);
+    const fbCtx = await extractFirebaseContext(req, { allowLocalFallback: true });
+    const { account, signedToken } = await authenticateAdmin(email, password, ip, ua, fbCtx);
 
     setAdminSessionCookie(res, signedToken);
     res.json({
       success: true,
       admin: account,
       sessionToken: signedToken,
+      ...getFirestorePersistenceStatus(),
     });
   } catch (err) {
     next(err);
@@ -166,12 +180,18 @@ router.post('/password-reset/confirm', adminResetRateLimiter, async (req: Reques
 // ---------------------------------------------------------------------------
 router.use(requireAdminAuth);
 
-router.get('/me', (req: AuthenticatedAdminRequest, res: Response) => {
-  res.json({
-    success: true,
-    admin: sanitizeAdminAccount(req.adminAccount!),
-    databaseMode: getDatabaseMode(),
-  });
+router.get('/me', async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    res.json({
+      success: true,
+      admin: sanitizeAdminAccount(req.adminAccount!),
+      databaseMode: getDatabaseMode(),
+      ...getFirestorePersistenceStatus(),
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/change-password', async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -203,204 +223,248 @@ router.post('/change-password', async (req: AuthenticatedAdminRequest, res: Resp
 // ---------------------------------------------------------------------------
 // 2. Dashboard Overview (Real DB KPIs + Interactive Charts + Recent Activity)
 // ---------------------------------------------------------------------------
-router.get('/overview', requirePermission('dashboard:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const daysParam = Math.min(90, Math.max(7, Number(req.query.days) || 14));
+router.get('/overview', requirePermission('dashboard:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const daysParam = Math.min(90, Math.max(7, Number(req.query.days) || 14));
 
-  const users = db.users;
-  const activeUsers = users.filter((u) => u.status === 'active').length;
-  const suspendedUsers = users.filter((u) => u.status === 'suspended').length;
+    const users = db.users;
+    const activeUsers = users.filter((u) => u.status === 'active').length;
+    const suspendedUsers = users.filter((u) => u.status === 'suspended').length;
 
-  const totalCreditsPurchased = users.reduce((sum, u) => sum + (u.totalPurchasedCredits || 0), 0);
-  const totalCreditsConsumed = users.reduce((sum, u) => sum + (u.totalConsumedCredits || 0), 0);
-  const totalRemainingCredits = users.reduce((sum, u) => sum + (u.remainingCredits || 0), 0);
+    const totalCreditsPurchased = users.reduce((sum, u) => sum + (u.totalPurchasedCredits || 0), 0);
+    const totalCreditsConsumed = users.reduce((sum, u) => sum + (u.totalConsumedCredits || 0), 0);
+    const totalRemainingCredits = users.reduce((sum, u) => sum + (u.remainingCredits || 0), 0);
 
-  const approvedPayments = db.paymentRequests.filter((p) => p.status === 'approved');
-  const pendingPayments = db.paymentRequests.filter((p) => p.status === 'pending');
-  const rejectedPayments = db.paymentRequests.filter((p) => p.status === 'rejected');
+    const approvedPayments = db.paymentRequests.filter((p) => p.status === 'approved');
+    const pendingPayments = db.paymentRequests.filter((p) => p.status === 'pending');
+    const rejectedPayments = db.paymentRequests.filter((p) => p.status === 'rejected');
 
-  const totalRevenueUsd = approvedPayments.reduce((sum, p) => sum + (Number(p.amountUsd) || 0), 0);
-  const activeSubscriptions = users.filter(
-    (u) =>
-      u.status === 'active' &&
-      u.planId !== 'plan_starter' &&
-      (!u.subscriptionExpiresAt || new Date(u.subscriptionExpiresAt).getTime() > Date.now())
-  ).length;
+    const totalRevenueUsd = approvedPayments.reduce((sum, p) => sum + (Number(p.amountUsd) || 0), 0);
+    const activeSubscriptions = users.filter(
+      (u) =>
+        u.status === 'active' &&
+        u.planId !== 'plan_starter' &&
+        (!u.subscriptionExpiresAt || new Date(u.subscriptionExpiresAt).getTime() > Date.now())
+    ).length;
 
-  const totalSpeechGenerations = db.speechHistory.length;
-  const totalProjects = db.projects.length;
-  const totalApiCalls = db.apiIntegrations.reduce((sum, i) => sum + (i.usageCount || 0), 0);
-  const totalEstimatedApiCostUsd =
-    Math.round(db.apiIntegrations.reduce((sum, i) => sum + (i.totalEstimatedCostUsd || 0), 0) * 10000) /
-    10000;
-  const recentApiErrorsCount = db.apiIntegrations.reduce(
-    (sum, i) => sum + (i.recentErrors?.length || 0),
-    0
-  );
-  const welcomeClaims = db.welcomeBonusClaims || [];
-  const totalWelcomeCreditsDistributed = welcomeClaims.reduce(
-    (sum, c) => sum + (Number(c.amountAwarded) || 0),
-    0
-  );
-  const welcomeBonusRecipientsCount = welcomeClaims.length;
+    const totalSpeechGenerations = db.speechHistory.length;
+    const totalProjects = db.projects.length;
+    const totalApiCalls = db.apiIntegrations.reduce((sum, i) => sum + (i.usageCount || 0), 0);
+    const totalEstimatedApiCostUsd =
+      Math.round(db.apiIntegrations.reduce((sum, i) => sum + (i.totalEstimatedCostUsd || 0), 0) * 10000) /
+      10000;
+    const recentApiErrorsCount = db.apiIntegrations.reduce(
+      (sum, i) => sum + (i.recentErrors?.length || 0),
+      0
+    );
 
-  // Build day-by-day buckets over `daysParam` days
-  const dayBuckets: string[] = [];
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  for (let i = daysParam - 1; i >= 0; i--) {
-    const d = new Date(today.getTime() - i * 86_400_000);
-    dayBuckets.push(d.toISOString().slice(0, 10));
-  }
-
-  const revenueByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
-  const registrationsByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
-  const creditsByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
-  const speechesByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
-
-  for (const p of approvedPayments) {
-    const day = (p.reviewedAt || p.createdAt).slice(0, 10);
-    if (revenueByDay.has(day)) {
-      revenueByDay.set(day, (revenueByDay.get(day) || 0) + (Number(p.amountUsd) || 0));
+    const welcomeClaimMap = new Map<string, number>();
+    for (const c of db.welcomeBonusClaims || []) {
+      welcomeClaimMap.set(c.googleSub || c.userId, Number(c.amountAwarded) || 0);
     }
-  }
-
-  for (const u of users) {
-    const day = u.createdAt.slice(0, 10);
-    if (registrationsByDay.has(day)) {
-      registrationsByDay.set(day, (registrationsByDay.get(day) || 0) + 1);
-    }
-  }
-
-  for (const tx of db.creditTransactions) {
-    if (tx.type === 'consumption' || tx.amount < 0) {
-      const day = tx.createdAt.slice(0, 10);
-      if (creditsByDay.has(day)) {
-        creditsByDay.set(day, (creditsByDay.get(day) || 0) + Math.abs(tx.amount));
+    for (const u of users) {
+      if (u.welcomeBonusClaimed) {
+        const key = u.googleSub || u.uid;
+        if (!welcomeClaimMap.has(key)) {
+          welcomeClaimMap.set(key, Number(u.welcomeBonusAmount) || 0);
+        }
       }
     }
-  }
-
-  for (const s of db.speechHistory) {
-    const day = s.createdAt.slice(0, 10);
-    if (speechesByDay.has(day)) {
-      speechesByDay.set(day, (speechesByDay.get(day) || 0) + 1);
+    for (const tx of db.creditTransactions) {
+      if (tx.type === 'signup_bonus') {
+        const u = users.find((x) => x.uid === tx.userId);
+        const key = tx.googleSub || u?.googleSub || tx.userId;
+        if (!welcomeClaimMap.has(key)) {
+          welcomeClaimMap.set(key, Number(tx.amount) || 0);
+        }
+      }
     }
-  }
+    const welcomeBonusRecipientsCount = welcomeClaimMap.size;
+    const totalWelcomeCreditsDistributed = Array.from(welcomeClaimMap.values()).reduce(
+      (sum, val) => sum + val,
+      0
+    );
 
-  // Subscription distribution from real users
-  const planCounts = new Map<string, number>();
-  for (const u of users) {
-    const name = u.planName || 'Starter';
-    planCounts.set(name, (planCounts.get(name) || 0) + 1);
-  }
-  const subscriptionDistribution = Array.from(planCounts.entries()).map(([label, value]) => ({
-    label,
-    value,
-  }));
+    // Build day-by-day buckets over `daysParam` days
+    const dayBuckets: string[] = [];
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    for (let i = daysParam - 1; i >= 0; i--) {
+      const d = new Date(today.getTime() - i * 86_400_000);
+      dayBuckets.push(d.toISOString().slice(0, 10));
+    }
 
-  res.json({
-    success: true,
-    kpis: {
-      totalUsers: users.length,
-      activeUsers,
-      suspendedUsers,
-      totalCreditsPurchased,
-      totalCreditsConsumed,
-      totalRemainingCredits,
-      totalRevenueUsd,
-      pendingPayments: pendingPayments.length,
-      approvedPayments: approvedPayments.length,
-      rejectedPayments: rejectedPayments.length,
-      activeSubscriptions,
-      totalSpeechGenerations,
-      totalProjects,
-      totalApiCalls,
-      totalEstimatedApiCostUsd,
-      recentApiErrorsCount,
-      totalWelcomeCreditsDistributed,
-      welcomeBonusRecipientsCount,
-    },
-    charts: {
-      revenueOverTime: dayBuckets.map((date) => ({ date, value: revenueByDay.get(date) || 0 })),
-      registrationTrends: dayBuckets.map((date) => ({ date, value: registrationsByDay.get(date) || 0 })),
-      creditConsumption: dayBuckets.map((date) => ({ date, value: creditsByDay.get(date) || 0 })),
-      speechActivity: dayBuckets.map((date) => ({ date, value: speechesByDay.get(date) || 0 })),
-      subscriptionDistribution,
-    },
-    recentRegistrations: [...users]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 6),
-    recentTransactions: [...db.paymentRequests]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 8),
-    recentActivities: db.auditLogs.slice(0, 10),
-  });
+    const revenueByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
+    const registrationsByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
+    const creditsByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
+    const speechesByDay = new Map<string, number>(dayBuckets.map((d) => [d, 0]));
+
+    for (const p of approvedPayments) {
+      const day = (p.reviewedAt || p.createdAt).slice(0, 10);
+      if (revenueByDay.has(day)) {
+        revenueByDay.set(day, (revenueByDay.get(day) || 0) + (Number(p.amountUsd) || 0));
+      }
+    }
+
+    for (const u of users) {
+      const day = u.createdAt.slice(0, 10);
+      if (registrationsByDay.has(day)) {
+        registrationsByDay.set(day, (registrationsByDay.get(day) || 0) + 1);
+      }
+    }
+
+    const consumedTaskIds = new Set<string>();
+    for (const tx of db.creditTransactions) {
+      if (tx.type === 'consumption' || tx.amount < 0) {
+        const day = tx.createdAt.slice(0, 10);
+        if (creditsByDay.has(day)) {
+          creditsByDay.set(day, (creditsByDay.get(day) || 0) + Math.abs(tx.amount));
+        }
+        const m = typeof tx.note === 'string' ? tx.note.match(/Task\s+([^\s·]+)/) : null;
+        if (m?.[1]) consumedTaskIds.add(m[1]);
+      }
+    }
+
+    for (const s of db.speechHistory) {
+      const day = s.createdAt.slice(0, 10);
+      if (speechesByDay.has(day)) {
+        speechesByDay.set(day, (speechesByDay.get(day) || 0) + 1);
+      }
+      if (
+        (s.status === 'completed' || s.status === 'simulated') &&
+        (s.creditCost || 0) > 0 &&
+        !consumedTaskIds.has(s.taskId) &&
+        creditsByDay.has(day)
+      ) {
+        creditsByDay.set(day, (creditsByDay.get(day) || 0) + Number(s.creditCost));
+      }
+    }
+
+    // Subscription distribution from real users
+    const planCounts = new Map<string, number>();
+    for (const u of users) {
+      const name = u.planName || 'Starter';
+      planCounts.set(name, (planCounts.get(name) || 0) + 1);
+    }
+    const subscriptionDistribution = Array.from(planCounts.entries()).map(([label, value]) => ({
+      label,
+      value,
+    }));
+
+    res.json({
+      success: true,
+      kpis: {
+        totalUsers: users.length,
+        activeUsers,
+        suspendedUsers,
+        totalCreditsPurchased,
+        totalCreditsConsumed,
+        totalRemainingCredits,
+        totalRevenueUsd,
+        pendingPayments: pendingPayments.length,
+        approvedPayments: approvedPayments.length,
+        rejectedPayments: rejectedPayments.length,
+        activeSubscriptions,
+        totalSpeechGenerations,
+        totalProjects,
+        totalApiCalls,
+        totalEstimatedApiCostUsd,
+        recentApiErrorsCount,
+        totalWelcomeCreditsDistributed,
+        welcomeBonusRecipientsCount,
+      },
+      charts: {
+        revenueOverTime: dayBuckets.map((date) => ({ date, value: revenueByDay.get(date) || 0 })),
+        registrationTrends: dayBuckets.map((date) => ({ date, value: registrationsByDay.get(date) || 0 })),
+        creditConsumption: dayBuckets.map((date) => ({ date, value: creditsByDay.get(date) || 0 })),
+        speechActivity: dayBuckets.map((date) => ({ date, value: speechesByDay.get(date) || 0 })),
+        subscriptionDistribution,
+      },
+      recentRegistrations: [...users]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 6),
+      recentTransactions: [...db.paymentRequests]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 8),
+      recentActivities: db.auditLogs.slice(0, 10),
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ---------------------------------------------------------------------------
 // 3. Complete User Management
 // ---------------------------------------------------------------------------
-router.get('/users', requirePermission('users:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const statusFilter = String(req.query.status || 'all');
-  const planFilter = String(req.query.plan || 'all');
-  const googleFilter = String(req.query.google || 'all');
+router.get('/users', requirePermission('users:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const statusFilter = String(req.query.status || 'all');
+    const planFilter = String(req.query.plan || 'all');
+    const googleFilter = String(req.query.google || 'all');
 
-  let filtered = [...db.users];
-  if (q) {
-    filtered = filtered.filter(
-      (u) =>
-        u.displayName.toLowerCase().includes(q) ||
-        u.email.toLowerCase().includes(q) ||
-        u.uid.toLowerCase().includes(q) ||
-        (u.googleSub || '').toLowerCase().includes(q)
-    );
-  }
-  if (statusFilter !== 'all') {
-    filtered = filtered.filter((u) => u.status === statusFilter);
-  }
-  if (planFilter !== 'all') {
-    filtered = filtered.filter((u) => u.planId === planFilter || u.planName === planFilter);
-  }
-  if (googleFilter === 'google') {
-    filtered = filtered.filter((u) => u.authProvider === 'google' || Boolean(u.googleSub));
-  } else if (googleFilter === 'bonus_claimed') {
-    filtered = filtered.filter((u) => Boolean(u.welcomeBonusClaimed));
-  } else if (googleFilter === 'no_bonus') {
-    filtered = filtered.filter((u) => !u.welcomeBonusClaimed);
-  }
+    let filtered = [...db.users];
+    if (q) {
+      filtered = filtered.filter(
+        (u) =>
+          u.displayName.toLowerCase().includes(q) ||
+          u.email.toLowerCase().includes(q) ||
+          u.uid.toLowerCase().includes(q) ||
+          (u.googleSub || '').toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== 'all') {
+      filtered = filtered.filter((u) => u.status === statusFilter);
+    }
+    if (planFilter !== 'all') {
+      filtered = filtered.filter((u) => u.planId === planFilter || u.planName === planFilter);
+    }
+    if (googleFilter === 'google') {
+      filtered = filtered.filter((u) => u.authProvider === 'google' || Boolean(u.googleSub));
+    } else if (googleFilter === 'bonus_claimed') {
+      filtered = filtered.filter((u) => Boolean(u.welcomeBonusClaimed));
+    } else if (googleFilter === 'no_bonus') {
+      filtered = filtered.filter((u) => !u.welcomeBonusClaimed);
+    }
 
-  filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  res.json({
-    success: true,
-    users: filtered,
-    total: filtered.length,
-  });
+    res.json({
+      success: true,
+      users: filtered,
+      total: filtered.length,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get('/users/:uid', requirePermission('users:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const user = db.users.find((u) => u.uid === req.params.uid);
-  if (!user) {
-    return res.status(404).json({ success: false, error: 'User not found.' });
+router.get('/users/:uid', requirePermission('users:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const user = db.users.find((u) => u.uid === req.params.uid);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    const projects = db.projects.filter((p) => p.userId === user.uid);
+    const paymentHistory = db.paymentRequests.filter((p) => p.userId === user.uid);
+    const creditTransactions = db.creditTransactions.filter((c) => c.userId === user.uid);
+    const speechHistory = db.speechHistory.filter((s) => s.userId === user.uid);
+
+    res.json({
+      success: true,
+      user,
+      projects,
+      paymentHistory,
+      creditTransactions,
+      speechHistory,
+    });
+  } catch (err) {
+    next(err);
   }
-
-  const projects = db.projects.filter((p) => p.userId === user.uid);
-  const paymentHistory = db.paymentRequests.filter((p) => p.userId === user.uid);
-  const creditTransactions = db.creditTransactions.filter((c) => c.userId === user.uid);
-  const speechHistory = db.speechHistory.filter((s) => s.userId === user.uid);
-
-  res.json({
-    success: true,
-    user,
-    projects,
-    paymentHistory,
-    creditTransactions,
-    speechHistory,
-  });
 });
 
 router.patch('/users/:uid', requirePermission('users:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -467,7 +531,7 @@ router.patch('/users/:uid', requirePermission('users:manage'), async (req: Authe
       });
 
       return user;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, user: updated });
   } catch (err) {
@@ -510,7 +574,7 @@ router.post('/users/:uid/suspend', requirePermission('users:manage'), async (req
         ipAddress: ip,
       });
       return target;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, user });
   } catch (err) {
@@ -552,7 +616,7 @@ router.post('/users/:uid/reactivate', requirePermission('users:manage'), async (
         ipAddress: ip,
       });
       return target;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, user });
   } catch (err) {
@@ -584,7 +648,7 @@ router.delete('/users/:uid', requirePermission('users:delete'), async (req: Auth
         previousValue: { email: target.email, displayName: target.displayName, planName: target.planName },
         ipAddress: ip,
       });
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, message: 'User permanently deleted.' });
   } catch (err) {
@@ -595,48 +659,73 @@ router.delete('/users/:uid', requirePermission('users:delete'), async (req: Auth
 // ---------------------------------------------------------------------------
 // 4. Credit Management
 // ---------------------------------------------------------------------------
-router.get('/credits/transactions', requirePermission('credits:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const typeFilter = String(req.query.type || 'all');
-  const dateFrom = String(req.query.dateFrom || '');
-  const dateTo = String(req.query.dateTo || '');
+router.get('/credits/transactions', requirePermission('credits:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const typeFilter = String(req.query.type || 'all');
+    const dateFrom = String(req.query.dateFrom || '');
+    const dateTo = String(req.query.dateTo || '');
 
-  let list = [...db.creditTransactions];
-  if (q) {
-    list = list.filter(
-      (t) =>
-        (t.userEmail || '').toLowerCase().includes(q) ||
-        (t.userName || '').toLowerCase().includes(q) ||
-        t.userId.toLowerCase().includes(q) ||
-        (t.googleSub || '').toLowerCase().includes(q) ||
-        t.reason.toLowerCase().includes(q)
-    );
-  }
-  if (typeFilter !== 'all') {
-    list = list.filter((t) => t.type === typeFilter);
-  }
-  if (dateFrom) {
-    list = list.filter((t) => t.createdAt.slice(0, 10) >= dateFrom);
-  }
-  if (dateTo) {
-    list = list.filter((t) => t.createdAt.slice(0, 10) <= dateTo);
-  }
+    let list = [...db.creditTransactions];
+    if (q) {
+      list = list.filter(
+        (t) =>
+          (t.userEmail || '').toLowerCase().includes(q) ||
+          (t.userName || '').toLowerCase().includes(q) ||
+          t.userId.toLowerCase().includes(q) ||
+          (t.googleSub || '').toLowerCase().includes(q) ||
+          t.reason.toLowerCase().includes(q)
+      );
+    }
+    if (typeFilter !== 'all') {
+      list = list.filter((t) => t.type === typeFilter);
+    }
+    if (dateFrom) {
+      list = list.filter((t) => t.createdAt.slice(0, 10) >= dateFrom);
+    }
+    if (dateTo) {
+      list = list.filter((t) => t.createdAt.slice(0, 10) <= dateTo);
+    }
 
-  list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const welcomeClaims = db.welcomeBonusClaims || [];
+    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  res.json({
-    success: true,
-    transactions: list,
-    summary: {
-      totalPurchased: db.users.reduce((s, u) => s + (u.totalPurchasedCredits || 0), 0),
-      totalConsumed: db.users.reduce((s, u) => s + (u.totalConsumedCredits || 0), 0),
-      totalRemaining: db.users.reduce((s, u) => s + (u.remainingCredits || 0), 0),
-      welcomeCreditsDistributed: welcomeClaims.reduce((s, c) => s + (Number(c.amountAwarded) || 0), 0),
-      welcomeBonusCount: welcomeClaims.length,
-    },
-  });
+    const welcomeClaimMap = new Map<string, number>();
+    for (const c of db.welcomeBonusClaims || []) {
+      welcomeClaimMap.set(c.googleSub || c.userId, Number(c.amountAwarded) || 0);
+    }
+    for (const u of db.users) {
+      if (u.welcomeBonusClaimed) {
+        const key = u.googleSub || u.uid;
+        if (!welcomeClaimMap.has(key)) {
+          welcomeClaimMap.set(key, Number(u.welcomeBonusAmount) || 0);
+        }
+      }
+    }
+    for (const tx of db.creditTransactions) {
+      if (tx.type === 'signup_bonus') {
+        const u = db.users.find((x) => x.uid === tx.userId);
+        const key = tx.googleSub || u?.googleSub || tx.userId;
+        if (!welcomeClaimMap.has(key)) {
+          welcomeClaimMap.set(key, Number(tx.amount) || 0);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      transactions: list,
+      summary: {
+        totalPurchased: db.users.reduce((s, u) => s + (u.totalPurchasedCredits || 0), 0),
+        totalConsumed: db.users.reduce((s, u) => s + (u.totalConsumedCredits || 0), 0),
+        totalRemaining: db.users.reduce((s, u) => s + (u.remainingCredits || 0), 0),
+        welcomeCreditsDistributed: Array.from(welcomeClaimMap.values()).reduce((s, v) => s + v, 0),
+        welcomeBonusCount: welcomeClaimMap.size,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/credits/adjust', requirePermission('credits:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -724,7 +813,7 @@ router.post('/credits/adjust', requirePermission('credits:manage'), async (req: 
       });
 
       return { user, transaction: txRecord };
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, ...result });
   } catch (err) {
@@ -735,38 +824,46 @@ router.post('/credits/adjust', requirePermission('credits:manage'), async (req: 
 // ---------------------------------------------------------------------------
 // 5. Payment & Transaction Management (Idempotent Atomic Approve / Reject)
 // ---------------------------------------------------------------------------
-router.get('/payments', requirePermission('payments:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const statusFilter = String(req.query.status || 'all');
+router.get('/payments', requirePermission('payments:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const statusFilter = String(req.query.status || 'all');
 
-  let list = [...db.paymentRequests];
-  if (q) {
-    list = list.filter(
-      (p) =>
-        p.userEmail.toLowerCase().includes(q) ||
-        p.userName.toLowerCase().includes(q) ||
-        p.transactionId.toLowerCase().includes(q) ||
-        p.planName.toLowerCase().includes(q) ||
-        p.id.toLowerCase().includes(q)
-    );
+    let list = [...db.paymentRequests];
+    if (q) {
+      list = list.filter(
+        (p) =>
+          p.userEmail.toLowerCase().includes(q) ||
+          p.userName.toLowerCase().includes(q) ||
+          p.transactionId.toLowerCase().includes(q) ||
+          p.planName.toLowerCase().includes(q) ||
+          p.id.toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== 'all') {
+      list = list.filter((p) => p.status === statusFilter);
+    }
+
+    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+    res.json({ success: true, payments: list });
+  } catch (err) {
+    next(err);
   }
-  if (statusFilter !== 'all') {
-    list = list.filter((p) => p.status === statusFilter);
-  }
-
-  list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-  res.json({ success: true, payments: list });
 });
 
-router.get('/payments/:id/receipt', requirePermission('payments:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const receipt = db.paymentReceipts.find((r) => r.paymentId === req.params.id);
-  if (!receipt) {
-    return res.status(404).json({ success: false, error: 'No receipt uploaded for this payment.' });
+router.get('/payments/:id/receipt', requirePermission('payments:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const receipt = db.paymentReceipts.find((r) => r.paymentId === req.params.id);
+    if (!receipt) {
+      return res.status(404).json({ success: false, error: 'No receipt uploaded for this payment.' });
+    }
+    res.json({ success: true, receipt });
+  } catch (err) {
+    next(err);
   }
-  res.json({ success: true, receipt });
 });
 
 router.post('/payments/:id/approve', requirePermission('payments:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -866,7 +963,7 @@ router.post('/payments/:id/approve', requirePermission('payments:manage'), async
       });
 
       return { payment, user };
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, ...result });
   } catch (err) {
@@ -926,7 +1023,7 @@ router.post('/payments/:id/reject', requirePermission('payments:manage'), async 
       });
 
       return target;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, payment });
   } catch (err) {
@@ -958,7 +1055,7 @@ router.patch('/payments/:id/note', requirePermission('payments:manage'), async (
         ipAddress: ip,
       });
       return target;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, payment });
   } catch (err) {
@@ -969,10 +1066,14 @@ router.patch('/payments/:id/note', requirePermission('payments:manage'), async (
 // ---------------------------------------------------------------------------
 // 6. Pricing Plans & Subscription Management
 // ---------------------------------------------------------------------------
-router.get('/plans', requirePermission('plans:view'), (_req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const plans = [...db.pricingPlans].sort((a, b) => a.displayOrder - b.displayOrder);
-  res.json({ success: true, plans });
+router.get('/plans', requirePermission('plans:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const plans = [...db.pricingPlans].sort((a, b) => a.displayOrder - b.displayOrder);
+    res.json({ success: true, plans });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/plans', requirePermission('plans:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -1020,7 +1121,7 @@ router.post('/plans', requirePermission('plans:manage'), async (req: Authenticat
       });
 
       return newPlan;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.status(201).json({ success: true, plan: created });
   } catch (err) {
@@ -1071,7 +1172,7 @@ router.patch('/plans/:id', requirePermission('plans:manage'), async (req: Authen
       });
 
       return plan;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, plan: updated });
   } catch (err) {
@@ -1103,7 +1204,7 @@ router.delete('/plans/:id', requirePermission('plans:manage'), async (req: Authe
         previousValue: { name: removed.name, monthlyPrice: removed.monthlyPrice },
         ipAddress: ip,
       });
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, message: 'Pricing plan deleted.' });
   } catch (err) {
@@ -1114,12 +1215,16 @@ router.delete('/plans/:id', requirePermission('plans:manage'), async (req: Authe
 // ---------------------------------------------------------------------------
 // 7. AI Speech API & Integration Management (Encrypted Vault, Masked Output)
 // ---------------------------------------------------------------------------
-router.get('/integrations', requirePermission('api:view'), (_req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  res.json({
-    success: true,
-    integrations: db.apiIntegrations.map(sanitizeIntegration),
-  });
+router.get('/integrations', requirePermission('api:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    res.json({
+      success: true,
+      integrations: db.apiIntegrations.map(sanitizeIntegration),
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/integrations', requirePermission('api:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -1174,7 +1279,7 @@ router.post('/integrations', requirePermission('api:manage'), async (req: Authen
       });
 
       return sanitizeIntegration(rec);
-    });
+    }, await getAdminReadCtx(req));
 
     invalidateVoiceCache();
     res.status(201).json({ success: true, integration: created });
@@ -1247,7 +1352,7 @@ router.patch('/integrations/:id', requirePermission('api:manage'), async (req: A
       });
 
       return sanitizeIntegration(rec);
-    });
+    }, await getAdminReadCtx(req));
 
     invalidateVoiceCache();
     res.json({ success: true, integration: updated });
@@ -1277,7 +1382,7 @@ router.delete('/integrations/:id', requirePermission('api:manage'), async (req: 
         previousValue: { providerName: removed.providerName, maskedKey: removed.maskedKey },
         ipAddress: ip,
       });
-    });
+    }, await getAdminReadCtx(req));
 
     invalidateVoiceCache();
     res.json({ success: true, message: 'API integration deleted.' });
@@ -1288,7 +1393,7 @@ router.delete('/integrations/:id', requirePermission('api:manage'), async (req: 
 
 router.post('/integrations/:id/test', requirePermission('api:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
   try {
-    const db = readDatabase();
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
     const target = db.apiIntegrations.find((i) => i.id === req.params.id);
     if (!target) throw Object.assign(new Error('API integration not found.'), { statusCode: 404 });
 
@@ -1328,7 +1433,7 @@ router.post('/integrations/:id/test', requirePermission('api:manage'), async (re
           ipAddress: getClientIp(req),
         });
         return sanitizeIntegration(rec);
-      });
+      }, await getAdminReadCtx(req));
 
       res.json({ success: true, integration: updated, upstreamHealth: healthPayload });
     } catch (testErr: any) {
@@ -1339,7 +1444,7 @@ router.post('/integrations/:id/test', requirePermission('api:manage'), async (re
         rec.lastStatusMessage = testErr.message || 'Connection test failed';
         rec.updatedAt = nowIso;
         return sanitizeIntegration(rec);
-      });
+      }, await getAdminReadCtx(req));
 
       res.status(200).json({
         success: false,
@@ -1355,42 +1460,50 @@ router.post('/integrations/:id/test', requirePermission('api:manage'), async (re
 // ---------------------------------------------------------------------------
 // 8. Projects Management
 // ---------------------------------------------------------------------------
-router.get('/projects', requirePermission('projects:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const statusFilter = String(req.query.status || 'all');
+router.get('/projects', requirePermission('projects:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const statusFilter = String(req.query.status || 'all');
 
-  let projects = db.projects.map((p) => {
-    const linkedGenerations = db.speechHistory.filter((s) => s.projectId === p.id);
-    return {
-      ...p,
-      generationsCount: linkedGenerations.length,
-    };
-  });
+    let projects = db.projects.map((p) => {
+      const linkedGenerations = db.speechHistory.filter((s) => s.projectId === p.id);
+      return {
+        ...p,
+        generationsCount: linkedGenerations.length,
+      };
+    });
 
-  if (q) {
-    projects = projects.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.id.toLowerCase().includes(q) ||
-        (p.userEmail || '').toLowerCase().includes(q) ||
-        (p.userName || '').toLowerCase().includes(q)
-    );
+    if (q) {
+      projects = projects.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.id.toLowerCase().includes(q) ||
+          (p.userEmail || '').toLowerCase().includes(q) ||
+          (p.userName || '').toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== 'all') {
+      projects = projects.filter((p) => p.status === statusFilter);
+    }
+
+    projects.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    res.json({ success: true, projects });
+  } catch (err) {
+    next(err);
   }
-  if (statusFilter !== 'all') {
-    projects = projects.filter((p) => p.status === statusFilter);
-  }
-
-  projects.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  res.json({ success: true, projects });
 });
 
-router.get('/projects/:id', requirePermission('projects:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const project = db.projects.find((p) => p.id === req.params.id);
-  if (!project) return res.status(404).json({ success: false, error: 'Project not found.' });
-  const generations = db.speechHistory.filter((s) => s.projectId === project.id);
-  res.json({ success: true, project, generations });
+router.get('/projects/:id', requirePermission('projects:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const project = db.projects.find((p) => p.id === req.params.id);
+    if (!project) return res.status(404).json({ success: false, error: 'Project not found.' });
+    const generations = db.speechHistory.filter((s) => s.projectId === project.id);
+    res.json({ success: true, project, generations });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.delete('/projects/:id', requirePermission('projects:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -1413,7 +1526,7 @@ router.delete('/projects/:id', requirePermission('projects:manage'), async (req:
         previousValue: { name: removed.name, userId: removed.userId },
         ipAddress: ip,
       });
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, message: 'Project deleted.' });
   } catch (err) {
@@ -1424,28 +1537,32 @@ router.delete('/projects/:id', requirePermission('projects:manage'), async (req:
 // ---------------------------------------------------------------------------
 // 9. Speech History Management
 // ---------------------------------------------------------------------------
-router.get('/speech-history', requirePermission('history:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const statusFilter = String(req.query.status || 'all');
+router.get('/speech-history', requirePermission('history:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const statusFilter = String(req.query.status || 'all');
 
-  let items = [...db.speechHistory];
-  if (q) {
-    items = items.filter(
-      (s) =>
-        s.id.toLowerCase().includes(q) ||
-        s.taskId.toLowerCase().includes(q) ||
-        s.voiceName.toLowerCase().includes(q) ||
-        (s.userEmail || '').toLowerCase().includes(q) ||
-        s.text.toLowerCase().includes(q)
-    );
-  }
-  if (statusFilter !== 'all') {
-    items = items.filter((s) => s.status === statusFilter);
-  }
+    let items = [...db.speechHistory];
+    if (q) {
+      items = items.filter(
+        (s) =>
+          s.id.toLowerCase().includes(q) ||
+          s.taskId.toLowerCase().includes(q) ||
+          s.voiceName.toLowerCase().includes(q) ||
+          (s.userEmail || '').toLowerCase().includes(q) ||
+          s.text.toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== 'all') {
+      items = items.filter((s) => s.status === statusFilter);
+    }
 
-  items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  res.json({ success: true, history: items });
+    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    res.json({ success: true, history: items });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.delete('/speech-history/:id', requirePermission('history:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -1468,7 +1585,7 @@ router.delete('/speech-history/:id', requirePermission('history:manage'), async 
         previousValue: { voiceName: removed.voiceName, userId: removed.userId, taskId: removed.taskId },
         ipAddress: ip,
       });
-    });
+    }, await getAdminWriteCtx(req));
     res.json({ success: true, message: 'Speech history record deleted.' });
   } catch (err) {
     next(err);
@@ -1481,8 +1598,8 @@ router.delete('/speech-history/:id', requirePermission('history:manage'), async 
 router.get('/voices', requirePermission('voices:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
   try {
     const forceRefresh = req.query.refresh === 'true';
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
     const catalog = await fetchVoiceCatalog(forceRefresh);
-    const db = readDatabase();
     const managed = mergeVoicesWithOverrides(catalog.voices, db.voiceOverrides, true);
     res.json({
       success: true,
@@ -1536,7 +1653,7 @@ router.post('/voices', requirePermission('voices:manage'), async (req: Authentic
         ipAddress: ip,
       });
       return record;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.status(201).json({ success: true, voice: override });
   } catch (err) {
@@ -1590,7 +1707,7 @@ router.put('/voices/:voiceId', requirePermission('voices:manage'), async (req: A
       });
 
       return existing;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, override });
   } catch (err) {
@@ -1601,9 +1718,13 @@ router.put('/voices/:voiceId', requirePermission('voices:manage'), async (req: A
 // ---------------------------------------------------------------------------
 // 11. Platform Settings
 // ---------------------------------------------------------------------------
-router.get('/settings', requirePermission('settings:view'), (_req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  res.json({ success: true, settings: db.platformSettings });
+router.get('/settings', requirePermission('settings:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    res.json({ success: true, settings: db.platformSettings });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.put('/settings', requirePermission('settings:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -1669,7 +1790,7 @@ router.put('/settings', requirePermission('settings:manage'), async (req: Authen
       });
 
       return s;
-    });
+    }, await getAdminWriteCtx(req));
 
     res.json({ success: true, settings: updated });
   } catch (err) {
@@ -1680,42 +1801,50 @@ router.put('/settings', requirePermission('settings:manage'), async (req: Authen
 // ---------------------------------------------------------------------------
 // 12. Immutable Admin Activity & Audit Logs (Read-Only)
 // ---------------------------------------------------------------------------
-router.get('/audit-logs', requirePermission('audit:view'), (req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const actionFilter = String(req.query.action || 'all');
+router.get('/audit-logs', requirePermission('audit:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const actionFilter = String(req.query.action || 'all');
 
-  let logs = [...db.auditLogs];
-  if (q) {
-    logs = logs.filter(
-      (l) =>
-        l.adminEmail.toLowerCase().includes(q) ||
-        l.action.toLowerCase().includes(q) ||
-        l.targetType.toLowerCase().includes(q) ||
-        l.targetId.toLowerCase().includes(q)
-    );
-  }
-  if (actionFilter !== 'all') {
-    logs = logs.filter((l) => l.action === actionFilter);
-  }
+    let logs = [...db.auditLogs];
+    if (q) {
+      logs = logs.filter(
+        (l) =>
+          l.adminEmail.toLowerCase().includes(q) ||
+          l.action.toLowerCase().includes(q) ||
+          l.targetType.toLowerCase().includes(q) ||
+          l.targetId.toLowerCase().includes(q)
+      );
+    }
+    if (actionFilter !== 'all') {
+      logs = logs.filter((l) => l.action === actionFilter);
+    }
 
-  res.json({
-    success: true,
-    logs: logs.slice(0, 500),
-    total: logs.length,
-  });
+    res.json({
+      success: true,
+      logs: logs.slice(0, 500),
+      total: logs.length,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ---------------------------------------------------------------------------
 // 13. Admin Accounts & RBAC Permissions (Super Admin Controlled)
 // ---------------------------------------------------------------------------
-router.get('/accounts', requirePermission('admins:view'), (_req: AuthenticatedAdminRequest, res: Response) => {
-  const db = readDatabase();
-  res.json({
-    success: true,
-    accounts: db.adminAccounts.map(sanitizeAdminAccount),
-    roleTemplates: ROLE_PERMISSIONS_MAP,
-  });
+router.get('/accounts', requirePermission('admins:view'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore(await getAdminReadCtx(req));
+    res.json({
+      success: true,
+      accounts: db.adminAccounts.map(sanitizeAdminAccount),
+      roleTemplates: ROLE_PERMISSIONS_MAP,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/accounts', requirePermission('admins:manage'), async (req: AuthenticatedAdminRequest, res: Response, next: NextFunction) => {
@@ -1779,7 +1908,7 @@ router.post('/accounts', requirePermission('admins:manage'), async (req: Authent
       });
 
       return sanitizeAdminAccount(newAdmin);
-    });
+    }, await getAdminReadCtx(req));
 
     res.status(201).json({ success: true, account: created });
   } catch (err) {
@@ -1843,7 +1972,7 @@ router.patch('/accounts/:id', requirePermission('admins:manage'), async (req: Au
       });
 
       return sanitizeAdminAccount(target);
-    });
+    }, await getAdminReadCtx(req));
 
     res.json({ success: true, account: updated });
   } catch (err) {
@@ -1881,7 +2010,7 @@ router.post('/accounts/:id/reset-password', requirePermission('admins:manage'), 
         newValue: { targetEmail: target.email },
         ipAddress: ip,
       });
-    });
+    }, await getAdminReadCtx(req));
 
     res.json({ success: true, message: 'Administrator password has been updated cleanly.' });
   } catch (err) {

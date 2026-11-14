@@ -180,3 +180,31 @@ export function verifySignedSessionToken(token: string | undefined | null): stri
 export function hashResetToken(rawToken: string): string {
   return crypto.createHash('sha256').update(rawToken).digest('hex');
 }
+
+export function signTaskMetaToken<T extends object>(payload: T): string {
+  const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', getSigningKey()).update(`tts.${payloadB64}`).digest('base64url');
+  return `${payloadB64}.${sig}`;
+}
+
+export function verifyTaskMetaToken<T = any>(token: string | undefined | null): T | null {
+  if (!token || typeof token !== 'string') return null;
+  const dot = token.indexOf('.');
+  if (dot <= 0) return null;
+  const payloadB64 = token.slice(0, dot);
+  const providedSig = token.slice(dot + 1);
+  if (!payloadB64 || !providedSig) return null;
+  const expectedSig = crypto
+    .createHmac('sha256', getSigningKey())
+    .update(`tts.${payloadB64}`)
+    .digest('base64url');
+  try {
+    const a = Buffer.from(providedSig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    return JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+

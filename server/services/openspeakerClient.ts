@@ -120,7 +120,7 @@ export async function recordIntegrationTelemetry(params: {
         target.lastStatusMessage = 'Operational';
       }
       target.updatedAt = new Date().toISOString();
-    });
+    }, { allowLocalFallback: true });
   } catch {
     // Non-blocking telemetry
   }

@@ -14,6 +14,13 @@ import {
   ApiIntegrationRecord,
 } from '../types/admin.js';
 import { hashPassword, encryptSecret, maskApiKey } from '../services/cryptoVault.js';
+import {
+  FirestoreContext,
+  FirestoreTransportMode,
+  getFirebaseProjectConfig,
+  loadDatabaseStateFromFirestore,
+  persistSpeaklyDiffToFirestore,
+} from './firestorePersistence.js';
 
 export const INITIAL_SUPER_ADMIN_EMAIL = 'officeahmadraza@gmail.com';
 const __filename = fileURLToPath(import.meta.url);
@@ -26,32 +33,40 @@ const DATA_DIR = IS_SERVERLESS
   : path.resolve(process.cwd(), '.speakly-data');
 const DB_FILE_PATH = path.join(DATA_DIR, 'speakly_db.json');
 
-function resolveFirebaseConfigPath(): string | null {
-  const candidates = [
-    path.resolve(process.cwd(), 'firebase-applet-config.json'),
-    path.resolve(__dirname, '../../firebase-applet-config.json'),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+let adminFirestoreDb: AdminFirestore | null = null;
+let firestoreBridgeStatus: 'uninitialized' | 'connected' | 'client_sdk_only' = 'uninitialized';
+let lastFirestoreMode: FirestoreTransportMode = 'local-only';
+let lastFirestoreSyncAt: string | null = null;
+let lastFirestoreError: string | null = null;
+
+function resolveAdminCredentialConfig(defaultProjectId: string): any | null {
+  const saJson = (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (saJson) {
+    return JSON.parse(saJson);
+  }
+  const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || '').trim();
+  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  if (clientEmail && privateKey) {
+    return {
+      projectId: (process.env.FIREBASE_PROJECT_ID || defaultProjectId).trim(),
+      clientEmail,
+      privateKey,
+    };
   }
   return null;
 }
 
-let adminFirestoreDb: AdminFirestore | null = null;
-let firestoreBridgeStatus: 'uninitialized' | 'connected' | 'client_sdk_only' = 'uninitialized';
-
 async function initOptionalAdminFirestore(): Promise<void> {
   if (firestoreBridgeStatus !== 'uninitialized') return;
   try {
-    const cfgPath = resolveFirebaseConfigPath();
-    if (!cfgPath) {
+    const fbCfg = getFirebaseProjectConfig();
+    if (!fbCfg) {
       firestoreBridgeStatus = 'client_sdk_only';
       return;
     }
-    const fbCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
-    if (!saJson) {
+    const credPayload = resolveAdminCredentialConfig(fbCfg.projectId);
+    if (!credPayload) {
       firestoreBridgeStatus = 'client_sdk_only';
       return;
     }
@@ -60,18 +75,21 @@ async function initOptionalAdminFirestore(): Promise<void> {
       getApps().length > 0
         ? getApps()[0]
         : initializeApp({
-            credential: cert(JSON.parse(saJson)),
-            projectId: fbCfg.projectId,
+            credential: cert(credPayload),
+            projectId: credPayload.projectId || fbCfg.projectId,
           });
 
     const db = getAdminFirestore(app, fbCfg.firestoreDatabaseId);
     await db.collection('pricing_plans').limit(1).get();
     adminFirestoreDb = db;
     firestoreBridgeStatus = 'connected';
+    lastFirestoreMode = 'admin-sdk';
+    lastFirestoreError = null;
     console.log('[DB] Server-side Firebase Admin Firestore connected.');
   } catch (err: any) {
     firestoreBridgeStatus = 'client_sdk_only';
-    console.warn('[DB] Server Firestore bridge running in atomic local-store + client-Firestore sync mode:', err.message);
+    lastFirestoreError = err?.message || String(err);
+    console.warn('[DB] Server Firestore bridge running in REST/ID-token + disk sync mode:', lastFirestoreError);
   }
 }
 
@@ -79,10 +97,27 @@ export function getAdminFirestoreBridge(): AdminFirestore | null {
   return adminFirestoreDb;
 }
 
+export function getFirestorePersistenceStatus() {
+  return {
+    adminSdkConfigured: firestoreBridgeStatus === 'connected',
+    firestoreMode: firestoreBridgeStatus === 'connected' ? 'admin-sdk' : lastFirestoreMode,
+    firestoreConnected:
+      firestoreBridgeStatus === 'connected' ||
+      lastFirestoreMode === 'id-token' ||
+      lastFirestoreMode === 'public-rest',
+    lastFirestoreSyncAt,
+    lastFirestoreError,
+  };
+}
+
 export function getDatabaseMode(): string {
-  return firestoreBridgeStatus === 'connected'
-    ? 'Firebase Admin Firestore + Atomic Server Store'
-    : 'Firebase Client Firestore + Atomic Transactional Server Store';
+  if (firestoreBridgeStatus === 'connected') {
+    return 'Firebase Admin SDK Firestore (Live Persistent)';
+  }
+  if (lastFirestoreMode === 'id-token') {
+    return 'Firebase Firestore REST (Verified Token Persistent)';
+  }
+  return 'Firebase Public REST + Ephemeral Cache (Sign in Google / Set Service Account for full persistence)';
 }
 
 function createDefaultPlans(now: string): PricingPlanRecord[] {
@@ -359,6 +394,41 @@ export function isSuperAdminPasswordConfigured(): boolean {
 export async function initDatabase(): Promise<void> {
   await initOptionalAdminFirestore();
   loadDbFromDisk();
+  await hydrateDatabaseFromFirestore({ allowLocalFallback: true }).catch((err) => {
+    console.warn('[DB] Initial Firestore hydration deferred:', err?.message || err);
+  });
+}
+
+export async function hydrateDatabaseFromFirestore(
+  ctx?: FirestoreContext
+): Promise<SpeaklyDatabase> {
+  await initOptionalAdminFirestore();
+  const baseDb = readDatabase();
+  try {
+    const { db: hydrated, mode } = await loadDatabaseStateFromFirestore({
+      adminDb: adminFirestoreDb,
+      baseDb,
+      ctx,
+    });
+    syncBootstrapSuperAdmin(hydrated);
+    inMemoryDb = hydrated;
+    lastFirestoreMode = mode;
+    lastFirestoreSyncAt = new Date().toISOString();
+    lastFirestoreError = null;
+    persistDbToDisk(hydrated);
+    return hydrated;
+  } catch (err: any) {
+    lastFirestoreError = err?.message || String(err);
+    if (ctx?.requireFirestore && !ctx?.allowLocalFallback) {
+      throw err;
+    }
+    console.warn('[DB] Firestore hydration fallback:', lastFirestoreError);
+    return baseDb;
+  }
+}
+
+export function resetLocalDatabaseCacheForTest(): void {
+  inMemoryDb = null;
 }
 
 export function readDatabase(): SpeaklyDatabase {
@@ -374,18 +444,32 @@ export function readDatabase(): SpeaklyDatabase {
 
 /**
  * Serialized atomic transaction wrapper.
- * Clones state for rollback safety if mutator throws.
+ * Hydrates from Firestore before mutating, persists diffs atomically to Firestore,
+ * and rolls back in-memory state if Firestore persistence fails.
  */
-export function runDbTransaction<T>(mutator: (db: SpeaklyDatabase) => Promise<T> | T): Promise<T> {
+export function runDbTransaction<T>(
+  mutator: (db: SpeaklyDatabase) => Promise<T> | T,
+  ctx?: FirestoreContext
+): Promise<T> {
   const next = writeMutexPromise.then(async () => {
-    const db = readDatabase();
+    const db = await hydrateDatabaseFromFirestore(ctx);
     const snapshot = JSON.parse(JSON.stringify(db)) as SpeaklyDatabase;
     try {
       const result = await mutator(db);
+      syncBootstrapSuperAdmin(db);
+      await persistSpeaklyDiffToFirestore({
+        adminDb: adminFirestoreDb,
+        prev: snapshot,
+        next: db,
+        ctx,
+      });
+      lastFirestoreSyncAt = new Date().toISOString();
+      lastFirestoreError = null;
       persistDbToDisk(db);
       inMemoryDb = db;
       return result;
-    } catch (err) {
+    } catch (err: any) {
+      lastFirestoreError = err?.message || String(err);
       inMemoryDb = snapshot;
       throw err;
     }
@@ -398,3 +482,4 @@ export function runDbTransaction<T>(mutator: (db: SpeaklyDatabase) => Promise<T>
 
   return next;
 }
+

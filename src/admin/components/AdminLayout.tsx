@@ -21,8 +21,17 @@ import {
   KeyRound,
   ExternalLink,
   Shield,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 import { AdminAccountPublic, AdminSectionId } from '../types.js';
+
+export interface FirestoreSyncBannerInfo {
+  adminSdkConfigured: boolean;
+  firestoreMode: string;
+  firestoreConnected: boolean;
+  lastFirestoreError: string | null;
+}
 
 interface AdminLayoutProps {
   admin: AdminAccountPublic;
@@ -34,6 +43,10 @@ interface AdminLayoutProps {
   onOpenChangePassword: () => void;
   onLogout: () => void;
   onNavigateToStudio: () => void;
+  firestoreSync?: FirestoreSyncBannerInfo | null;
+  firebaseEmail?: string | null;
+  connectingGoogleSync?: boolean;
+  onConnectGoogleSync?: () => void;
   children: React.ReactNode;
 }
 
@@ -72,6 +85,10 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   onOpenChangePassword,
   onLogout,
   onNavigateToStudio,
+  firestoreSync,
+  firebaseEmail,
+  connectingGoogleSync,
+  onConnectGoogleSync,
   children,
 }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -295,7 +312,42 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
         </header>
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          <div className="max-w-[1440px] mx-auto space-y-6">{children}</div>
+          <div className="max-w-[1440px] mx-auto space-y-6">
+            {firestoreSync &&
+              !firestoreSync.adminSdkConfigured &&
+              firestoreSync.firestoreMode !== 'id-token' && (
+                <div className="rounded-xl border border-[#D97706]/30 bg-[#D97706]/8 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <AlertTriangle className="w-4 h-4 text-[#D97706] dark:text-[#F59E0B] shrink-0 mt-0.5" />
+                    <div className="text-xs text-[#11162B] dark:text-[#F3F5FA] space-y-0.5">
+                      <div className="font-semibold">
+                        Connect Google for Live Firestore Persistence
+                      </div>
+                      <p className="text-[11px] text-[#5A6580] dark:text-[#A2ADC7]">
+                        {firebaseEmail
+                          ? `Signed in to Firebase as ${firebaseEmail}, which does not have admin Firestore access. Sign in with officeahmadraza@gmail.com or configure FIREBASE_SERVICE_ACCOUNT_JSON.`
+                          : 'Server Admin SDK credentials are not configured yet. Sign in with your root Google account (officeahmadraza@gmail.com) to load and persist live Firebase data.'}
+                        {firestoreSync.lastFirestoreError
+                          ? ` (${firestoreSync.lastFirestoreError})`
+                          : ''}
+                      </p>
+                    </div>
+                  </div>
+                  {onConnectGoogleSync && (
+                    <button
+                      type="button"
+                      onClick={onConnectGoogleSync}
+                      disabled={connectingGoogleSync}
+                      className="h-8 px-3.5 rounded-lg bg-[#2E5BFF] hover:bg-[#234AE0] dark:bg-[#4D74FF] dark:hover:bg-[#6687FF] text-white text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                    >
+                      {connectingGoogleSync && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>Connect Google (officeahmadraza@gmail.com)</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            {children}
+          </div>
         </main>
       </div>
     </div>

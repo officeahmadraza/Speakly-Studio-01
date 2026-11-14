@@ -32,7 +32,13 @@ import {
   recordIntegrationTelemetry,
   sanitizeUpstreamErrorMessage,
 } from './server/services/openspeakerClient.js';
-import { initDatabase, readDatabase, runDbTransaction } from './server/db/database.js';
+import {
+  initDatabase,
+  hydrateDatabaseFromFirestore,
+  runDbTransaction,
+} from './server/db/database.js';
+import { extractFirebaseContext } from './server/services/firebaseTokenVerifier.js';
+import { signTaskMetaToken, verifyTaskMetaToken } from './server/services/cryptoVault.js';
 import { resolveAdminSession } from './server/services/adminAuthService.js';
 import adminRoutes from './server/routes/adminRoutes.js';
 import userRoutes, { optionalFirebaseUser } from './server/routes/userRoutes.js';
@@ -118,23 +124,29 @@ app.use('/api', userRoutes);
 
 // 1. Health check
 app.get('/api/health', async (_req: Request, res: Response) => {
+  await hydrateDatabaseFromFirestore({ allowLocalFallback: true }).catch(() => undefined);
   const health = await checkHealth();
   const statusCode = health.status === 'ok' ? 200 : health.configured ? 502 : 200;
   res.status(statusCode).json(health);
 });
 
 // 2. Safe Public Client Config (Never exposes API Key)
-app.get('/api/config', (_req: Request, res: Response) => {
-  const activeCfg = resolveActiveApiConfig();
-  const dbSettings = readDatabase().platformSettings;
-  res.json({
-    isConfigured: activeCfg.configured,
-    apiBaseUrl: activeCfg.apiBaseUrl,
-    maxTextChars: dbSettings?.maxTextChars || config.maxTextChars,
-    creditCostPer1kChars: DEFAULT_CREDIT_COST_PER_1K_CHARS,
-    transcriptSurchargePercent:
-      dbSettings?.transcriptSurchargePercent ?? DEFAULT_TRANSCRIPT_SURCHARGE_PERCENT,
-  });
+app.get('/api/config', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = await hydrateDatabaseFromFirestore({ allowLocalFallback: true });
+    const activeCfg = resolveActiveApiConfig();
+    const dbSettings = db.platformSettings;
+    res.json({
+      isConfigured: activeCfg.configured,
+      apiBaseUrl: activeCfg.apiBaseUrl,
+      maxTextChars: dbSettings?.maxTextChars || config.maxTextChars,
+      creditCostPer1kChars: DEFAULT_CREDIT_COST_PER_1K_CHARS,
+      transcriptSurchargePercent:
+        dbSettings?.transcriptSurchargePercent ?? DEFAULT_TRANSCRIPT_SURCHARGE_PERCENT,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // 3. Voices Catalog — supports fast paginated/filtered queries & slim legacy mode
@@ -152,7 +164,7 @@ app.get('/api/voices', async (req: Request, res: Response, next: NextFunction) =
       req.query.sort !== undefined ||
       req.query.ids !== undefined;
 
-    const db = readDatabase();
+    const db = await hydrateDatabaseFromFirestore({ allowLocalFallback: true });
 
     if (hasPaginationOrFilter && req.query.all !== 'true') {
       const pageNum = parseInt(String(req.query.page || '1'), 10);
@@ -234,7 +246,7 @@ app.get('/api/voices', async (req: Request, res: Response, next: NextFunction) =
 app.post('/api/voices/batch', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
-    const db = readDatabase();
+    const db = await hydrateDatabaseFromFirestore({ allowLocalFallback: true });
     const result = await getVoicesByIds(ids, db.voiceOverrides);
     res.json({
       success: true,
@@ -249,8 +261,10 @@ app.post('/api/voices/batch', async (req: Request, res: Response, next: NextFunc
 app.post('/api/voices/refresh', async (_req: Request, res: Response, next: NextFunction) => {
   try {
     invalidateVoiceCache();
-    const catalog = await fetchVoiceCatalog(true, true);
-    const db = readDatabase();
+    const [catalog, db] = await Promise.all([
+      fetchVoiceCatalog(true, true),
+      hydrateDatabaseFromFirestore({ allowLocalFallback: true }),
+    ]);
     const mergedVoices = mergeVoicesWithOverrides(catalog.voices, db.voiceOverrides, false).map(toSlimVoice);
     res.json({
       success: true,
@@ -279,8 +293,10 @@ app.get('/api/voices/search', async (req: Request, res: Response, next: NextFunc
     if (!query.trim()) {
       return res.json({ success: true, voices: [] });
     }
-    const voices = await searchUpstreamVoices(query.trim());
-    const db = readDatabase();
+    const [voices, db] = await Promise.all([
+      searchUpstreamVoices(query.trim()),
+      hydrateDatabaseFromFirestore({ allowLocalFallback: true }),
+    ]);
     const disabledSet = new Set(db.voiceOverrides.filter((o) => !o.enabled).map((o) => o.voiceId));
     const filtered = voices.filter((v) => !disabledSet.has(v.id)).map(toSlimVoice);
     res.json({
@@ -300,7 +316,7 @@ app.get('/api/voices/:voiceId/preview', async (req: Request, res: Response, next
 
     let targetUrl = directUrl && directUrl.trim().startsWith('http') ? directUrl.trim() : undefined;
     if (!targetUrl) {
-      const db = readDatabase();
+      const db = await hydrateDatabaseFromFirestore({ allowLocalFallback: true });
       const customOv = db.voiceOverrides.find((o) => o.voiceId === voiceId && o.customPreviewUrl);
       if (customOv?.customPreviewUrl) {
         targetUrl = customOv.customPreviewUrl;
@@ -345,7 +361,8 @@ app.get('/api/audio-proxy', async (req: Request, res: Response, next: NextFuncti
 // 4. Create TTS Task (Checks Maintenance Mode, User Suspension & Credits)
 app.post('/api/tts', ttsRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = readDatabase();
+    const fbCtx = await extractFirebaseContext(req, { allowLocalFallback: true });
+    const db = await hydrateDatabaseFromFirestore(fbCtx);
     if (db.platformSettings.maintenanceMode) {
       const adminSess = await resolveAdminSession(req);
       if (!adminSess) {
@@ -457,7 +474,7 @@ app.post('/api/tts', ttsRateLimiter, async (req: Request, res: Response, next: N
     );
 
     const cachedVoice = getCachedVoiceById(voiceId);
-    pendingTaskMetaMap.set(result.taskId, {
+    const metaEntry: ServerTaskMeta = {
       taskId: result.taskId,
       userId: userRecord.uid,
       userEmail: userRecord.email,
@@ -479,6 +496,13 @@ app.post('/api/tts', ttsRateLimiter, async (req: Request, res: Response, next: N
       integrationId: activeCfg.integrationId,
       finalized: false,
       createdAt: Date.now(),
+    };
+    pendingTaskMetaMap.set(result.taskId, metaEntry);
+
+    // Compact HMAC-signed token so Vercel serverless lambdas can recover metadata even across cold starts
+    const taskMetaToken = signTaskMetaToken({
+      ...metaEntry,
+      text: trimmedText.length > 900 ? `${trimmedText.slice(0, 900)}...` : trimmedText,
     });
 
     // Prune stale map entries older than 2 hours
@@ -489,7 +513,7 @@ app.post('/api/tts', ttsRateLimiter, async (req: Request, res: Response, next: N
       }
     }
 
-    res.status(201).json(result);
+    res.status(201).json({ ...result, taskMetaToken });
   } catch (err) {
     next(err);
   }
@@ -499,9 +523,23 @@ app.post('/api/tts', ttsRateLimiter, async (req: Request, res: Response, next: N
 app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const taskId = req.params.taskId;
-    const meta = pendingTaskMetaMap.get(taskId);
-    const initialDb = readDatabase();
+    const fbCtx = await extractFirebaseContext(req, { allowLocalFallback: true });
+    const initialDb = await hydrateDatabaseFromFirestore(fbCtx);
     const existingHistory = initialDb.speechHistory.find((h) => h.taskId === taskId);
+
+    let meta = pendingTaskMetaMap.get(taskId);
+    if (!meta && !existingHistory) {
+      const rawToken =
+        (typeof req.headers['x-task-meta'] === 'string' ? req.headers['x-task-meta'] : '') ||
+        (typeof req.query.taskMetaToken === 'string' ? req.query.taskMetaToken : '');
+      if (rawToken) {
+        const verified = verifyTaskMetaToken<ServerTaskMeta>(rawToken);
+        if (verified && verified.taskId === taskId && (!fbCtx.uid || verified.userId === fbCtx.uid)) {
+          meta = { ...verified, finalized: false };
+          pendingTaskMetaMap.set(taskId, meta);
+        }
+      }
+    }
 
     const includeTranscript = meta
       ? meta.withTranscript
@@ -513,6 +551,7 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
     if (
       meta &&
       !meta.finalized &&
+      !existingHistory &&
       (task.status === 'done' || task.status === 'completed' || task.status === 'failed' || task.status === 'error')
     ) {
       meta.finalized = true;
@@ -559,19 +598,25 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
       let recordedTranscriptCredits = 0;
       let recordedTotalCost = 0;
 
+      const writeCtx = {
+        ...fbCtx,
+        requireFirestore: Boolean(fbCtx.firebaseIdToken),
+        allowLocalFallback: !fbCtx.firebaseIdToken,
+      };
+
       await runDbTransaction((db) => {
         if (db.speechHistory.some((h) => h.taskId === taskId)) return;
 
         const settings = db.platformSettings;
         const surchargePct =
-          meta.transcriptSurchargePercent ??
+          meta!.transcriptSurchargePercent ??
           settings.transcriptSurchargePercent ??
           DEFAULT_TRANSCRIPT_SURCHARGE_PERCENT;
 
         // Strict 1:1 billing rule: always charge 1 credit per trimmed char (+25% rounded up when transcript succeeded)
         const billingBreakdown = calculateCreditBreakdown({
-          charCount: meta.charCount,
-          withTranscript: Boolean(isSuccess && meta.withTranscript && hasValidTranscript),
+          charCount: meta!.charCount,
+          withTranscript: Boolean(isSuccess && meta!.withTranscript && hasValidTranscript),
           availableCredits: Number.MAX_SAFE_INTEGER,
           transcriptSurchargePercent: surchargePct,
         });
@@ -579,7 +624,7 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
         const baseAudioCost = isSuccess ? billingBreakdown.audioCredits : 0;
         const transcriptSurchargeCost = isSuccess ? billingBreakdown.transcriptCredits : 0;
         const computedTotalCost = isSuccess ? billingBreakdown.totalCredits : 0;
-        const estSec = Math.max(1, Math.round(((meta.wordCount / 145) * 60) / (meta.speed || 1)));
+        const estSec = Math.max(1, Math.round(((meta!.wordCount / 145) * 60) / (meta!.speed || 1)));
         const nowIso = new Date().toISOString();
 
         recordedAudioCredits = isSuccess ? baseAudioCost : 0;
@@ -588,22 +633,22 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
 
         db.speechHistory.unshift({
           id: `gen_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
-          userId: meta.userId,
-          userEmail: meta.userEmail,
-          userName: meta.userName,
+          userId: meta!.userId,
+          userEmail: meta!.userEmail,
+          userName: meta!.userName,
           taskId,
-          voiceId: meta.voiceId,
-          voiceName: meta.voiceName,
+          voiceId: meta!.voiceId,
+          voiceName: meta!.voiceName,
           language: undefined,
-          projectId: meta.projectId,
-          text: meta.text,
-          charCount: meta.charCount,
-          wordCount: meta.wordCount,
-          speed: meta.speed,
-          withTranscript: meta.withTranscript,
-          hasTranscript: Boolean(isSuccess && meta.withTranscript && enrichedTranscript),
-          transcriptData: isSuccess && meta.withTranscript ? enrichedTranscript : undefined,
-          fileName: meta.fileName,
+          projectId: meta!.projectId,
+          text: meta!.text,
+          charCount: meta!.charCount,
+          wordCount: meta!.wordCount,
+          speed: meta!.speed,
+          withTranscript: meta!.withTranscript,
+          hasTranscript: Boolean(isSuccess && meta!.withTranscript && enrichedTranscript),
+          transcriptData: isSuccess && meta!.withTranscript ? enrichedTranscript : undefined,
+          fileName: meta!.fileName,
           audioUrl: isSuccess ? task.audioUrl || null : null,
           creditCost: computedTotalCost,
           estimatedDurationSec: estSec,
@@ -616,8 +661,8 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
           db.speechHistory = db.speechHistory.slice(0, 3000);
         }
 
-        if (meta.userId !== 'guest') {
-          const user = db.users.find((u) => u.uid === meta.userId);
+        if (meta!.userId !== 'guest') {
+          const user = db.users.find((u) => u.uid === meta!.userId);
           if (user) {
             if (isSuccess && computedTotalCost > 0) {
               const prevBal = user.remainingCredits || 0;
@@ -636,10 +681,10 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
                 amount: -deduct,
                 newBalance: user.remainingCredits,
                 type: 'consumption',
-                reason: meta.withTranscript
-                  ? `Speech + Transcript (${meta.voiceName})`
-                  : `Speech generation (${meta.voiceName})`,
-                note: `Task ${taskId} · ${meta.charCount} chars${
+                reason: meta!.withTranscript
+                  ? `Speech + Transcript (${meta!.voiceName})`
+                  : `Speech generation (${meta!.voiceName})`,
+                note: `Task ${taskId} · ${meta!.charCount} chars${
                   transcriptSurchargeCost > 0 ? ` · +${transcriptSurchargeCost} transcript credits` : ''
                 }`,
                 createdAt: nowIso,
@@ -670,8 +715,8 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
                   newBalance: user.remainingCredits,
                   type: 'refund',
                   reason: transcriptFailed
-                    ? `Full refund — transcript unavailable (${meta.voiceName})`
-                    : `Full refund — generation failed (${meta.voiceName})`,
+                    ? `Full refund — transcript unavailable (${meta!.voiceName})`
+                    : `Full refund — generation failed (${meta!.voiceName})`,
                   note: `Task ${taskId}`,
                   createdAt: nowIso,
                 });
@@ -680,7 +725,7 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
             }
           }
         }
-      });
+      }, writeCtx);
 
       if (isSuccess) {
         task.creditCost = recordedTotalCost;
@@ -690,13 +735,13 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
 
       if (isSuccess && meta.integrationId) {
         const approxUsd = Math.round((meta.charCount / 1000) * 0.03 * 10000) / 10000;
-        void recordIntegrationTelemetry({
+        await recordIntegrationTelemetry({
           integrationId: meta.integrationId,
           endpoint: '/v3/text-to-speech',
           success: true,
           statusCode: 200,
           estimatedCostUsd: approxUsd,
-        });
+        }).catch((e) => console.warn('[Telemetry] warning:', e?.message || e));
       }
     } else if (existingHistory) {
       // Subsequent polls after finalization: enforce persisted completion/failure/transcript state
@@ -726,41 +771,65 @@ app.get('/api/tasks/:taskId', async (req: Request, res: Response, next: NextFunc
 });
 
 // 6. Download Completed Audio & Word-Aligned Transcript (.txt)
-app.get('/api/tasks/:taskId/transcript', (req: Request, res: Response) => {
-  const taskId = req.params.taskId;
-  const db = readDatabase();
-  const record = db.speechHistory.find((h) => h.taskId === taskId);
+app.get('/api/tasks/:taskId/transcript', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const taskId = req.params.taskId;
+    const fbCtx = await extractFirebaseContext(req, { allowLocalFallback: true });
+    const db = await hydrateDatabaseFromFirestore(fbCtx);
+    const record = db.speechHistory.find((h) => h.taskId === taskId);
 
-  if (
-    !record ||
-    record.status !== 'completed' ||
-    !record.withTranscript ||
-    !record.hasTranscript ||
-    !record.transcriptData ||
-    !Array.isArray(record.transcriptData.words) ||
-    record.transcriptData.words.length === 0
-  ) {
-    return res.status(404).json({
-      success: false,
-      error: 'Word-aligned transcript is not available for this task.',
+    if (!record || record.status !== 'completed' || !record.withTranscript || !record.hasTranscript) {
+      return res.status(404).json({
+        success: false,
+        error: 'Word-aligned transcript is not available for this task.',
+      });
+    }
+
+    let transcriptData = record.transcriptData;
+    if (!transcriptData || !Array.isArray(transcriptData.words) || transcriptData.words.length === 0) {
+      const liveTask = await fetchTaskStatus(taskId, { includeTranscript: true });
+      if (
+        liveTask?.transcriptData &&
+        Array.isArray(liveTask.transcriptData.words) &&
+        liveTask.transcriptData.words.length > 0
+      ) {
+        transcriptData = {
+          ...liveTask.transcriptData,
+          voiceId: record.voiceId,
+          voiceName: record.voiceName,
+          text: record.text,
+          speed: record.speed,
+          charCount: record.charCount,
+          wordCount: record.wordCount,
+        };
+      }
+    }
+
+    if (!transcriptData || !Array.isArray(transcriptData.words) || transcriptData.words.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Word-aligned transcript is not available for this task.',
+      });
+    }
+
+    const rawDisplayName = (record.fileName || record.voiceName || `speech_${taskId}`).trim();
+    const safeFileSlug = rawDisplayName
+      .replace(/[^a-zA-Z0-9_\-\s]/g, '_')
+      .trim()
+      .replace(/\s+/g, '_');
+
+    const txtContent = formatTranscriptAsTxt({
+      transcript: transcriptData,
+      fileName: rawDisplayName,
+      totalCharacters: typeof record.text === 'string' ? record.text.trim().length : record.charCount,
     });
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFileSlug || 'speech'}_transcript.txt"`);
+    res.send(txtContent);
+  } catch (err) {
+    next(err);
   }
-
-  const rawDisplayName = (record.fileName || record.voiceName || `speech_${taskId}`).trim();
-  const safeFileSlug = rawDisplayName
-    .replace(/[^a-zA-Z0-9_\-\s]/g, '_')
-    .trim()
-    .replace(/\s+/g, '_');
-
-  const txtContent = formatTranscriptAsTxt({
-    transcript: record.transcriptData,
-    fileName: rawDisplayName,
-    totalCharacters: typeof record.text === 'string' ? record.text.trim().length : record.charCount,
-  });
-
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${safeFileSlug || 'speech'}_transcript.txt"`);
-  res.send(txtContent);
 });
 
 app.get('/api/download/:taskId', downloadRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
