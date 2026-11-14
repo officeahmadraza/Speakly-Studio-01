@@ -1,6 +1,10 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export interface VerifiedFirebaseUser {
   uid: string;
@@ -23,14 +27,27 @@ let cachedProjectId: string | null = null;
 
 function getFirebaseProjectId(): string | null {
   if (cachedProjectId) return cachedProjectId;
-  try {
-    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-    if (fs.existsSync(cfgPath)) {
-      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      cachedProjectId = parsed?.projectId || null;
+  const envProjectId =
+    process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || null;
+  const candidates = [
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    path.resolve(__dirname, '../../firebase-applet-config.json'),
+  ];
+  for (const cfgPath of candidates) {
+    try {
+      if (fs.existsSync(cfgPath)) {
+        const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        if (parsed?.projectId) {
+          cachedProjectId = parsed.projectId;
+          return cachedProjectId;
+        }
+      }
+    } catch {
+      // try next candidate
     }
-  } catch {
-    // ignore
+  }
+  if (envProjectId) {
+    cachedProjectId = envProjectId;
   }
   return cachedProjectId;
 }

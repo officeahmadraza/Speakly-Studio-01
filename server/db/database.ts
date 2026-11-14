@@ -1,5 +1,7 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore, Firestore as AdminFirestore } from 'firebase-admin/firestore';
 import { config, isApiKeyConfigured } from '../config.js';
@@ -14,8 +16,26 @@ import {
 import { hashPassword, encryptSecret, maskApiKey } from '../services/cryptoVault.js';
 
 export const INITIAL_SUPER_ADMIN_EMAIL = 'officeahmadraza@gmail.com';
-const DATA_DIR = path.resolve(process.cwd(), '.speakly-data');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const IS_SERVERLESS = Boolean(
+  process.env.VERCEL || process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME
+);
+const DATA_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), '.speakly-data')
+  : path.resolve(process.cwd(), '.speakly-data');
 const DB_FILE_PATH = path.join(DATA_DIR, 'speakly_db.json');
+
+function resolveFirebaseConfigPath(): string | null {
+  const candidates = [
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    path.resolve(__dirname, '../../firebase-applet-config.json'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 let adminFirestoreDb: AdminFirestore | null = null;
 let firestoreBridgeStatus: 'uninitialized' | 'connected' | 'client_sdk_only' = 'uninitialized';
@@ -23,8 +43,8 @@ let firestoreBridgeStatus: 'uninitialized' | 'connected' | 'client_sdk_only' = '
 async function initOptionalAdminFirestore(): Promise<void> {
   if (firestoreBridgeStatus !== 'uninitialized') return;
   try {
-    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-    if (!fs.existsSync(cfgPath)) {
+    const cfgPath = resolveFirebaseConfigPath();
+    if (!cfgPath) {
       firestoreBridgeStatus = 'client_sdk_only';
       return;
     }
@@ -283,10 +303,18 @@ function loadDbFromDisk(): SpeaklyDatabase {
 }
 
 function persistDbToDisk(db: SpeaklyDatabase): void {
-  ensureStorageDir();
-  const tmpPath = `${DB_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), 'utf8');
-  fs.renameSync(tmpPath, DB_FILE_PATH);
+  try {
+    ensureStorageDir();
+    const tmpPath = `${DB_FILE_PATH}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), 'utf8');
+    fs.renameSync(tmpPath, DB_FILE_PATH);
+  } catch (err: any) {
+    if (IS_SERVERLESS) {
+      console.warn('[DB] Disk persistence skipped in serverless environment:', err?.message || err);
+    } else {
+      throw err;
+    }
+  }
 }
 
 /**

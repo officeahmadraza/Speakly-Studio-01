@@ -89,7 +89,10 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
       req.url.startsWith('/download') ||
       req.url.startsWith('/audio-proxy') ||
       req.url.startsWith('/config') ||
-      req.url.startsWith('/health'))
+      req.url.startsWith('/health') ||
+      req.url.startsWith('/user') ||
+      req.url.startsWith('/public') ||
+      req.url.startsWith('/admin'))
   ) {
     req.url = `/api${req.url}`;
   }

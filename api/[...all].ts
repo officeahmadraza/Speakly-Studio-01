@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
-import { app } from '../server.js';
+import handler from './index.js';
 
 // Vercel serverless catch-all handler for /api/*
-export default function handler(req: Request, res: Response) {
-  return app(req, res);
+export default function catchAllHandler(req: Request, res: Response) {
+  return handler(req, res);
 }
